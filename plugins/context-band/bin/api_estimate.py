@@ -27,7 +27,7 @@ SCAN_DAYS = 15
 PROJECTS = os.path.expanduser('~/.claude/projects')
 HISTORY = os.path.expanduser('~/Library/Application Support/Claude/plan-usage-history.json')
 CACHE = os.path.expanduser('~/.cache/context-band/scan.json')
-CACHE_VERSION = 3
+CACHE_VERSION = 4
 
 # USD per million tokens: input, output, cache read. Cache writes bill 1.25x
 # input (5-minute TTL) or 2x input (1-hour TTL); fast mode bills 2x.
@@ -48,27 +48,26 @@ PRICES = {
 }
 FAMILY = {'fable': 'claude-fable-5-1', 'mythos': 'claude-mythos-5-1', 'opus': 'claude-opus-5-5',
           'sonnet': 'claude-sonnet-5-5', 'haiku': 'claude-haiku-4-5'}
+# What a model of a family the table has never seen is priced as, until its price is learned.
+BASE = 'claude-opus-5-5'
 
 
 def price_for(model):
+    """(input, output, cache read) per million tokens, and how they were found: "list" when the
+    table has this model, "family" when it is priced as its family's current model (a newer
+    Opus as Opus 5.5), "unknown" when the family is new too and it is priced as BASE."""
     name = re.sub(r'\[.*\]$', '', model or '')
     name = re.sub(r'-\d{8}$', '', name)
     if name in PRICES:
-        return PRICES[name]
-    for key in sorted(PRICES, key=len, reverse=True):
-        if name.startswith(key):
-            return PRICES[key]
+        return PRICES[name], 'list'
     for family, key in FAMILY.items():
         if family in name:
-            return PRICES[key]
-    return None
+            return PRICES[key], 'family'
+    return PRICES[BASE], 'unknown'
 
 
 def message_cost(usage, model):
-    price = price_for(model)
-    if price is None:
-        return 0.0
-    inp, out, read = price
+    inp, out, read = price_for(model)[0]
     created = usage.get('cache_creation') or {}
     write_5m = created.get('ephemeral_5m_input_tokens')
     write_1h = created.get('ephemeral_1h_input_tokens')
@@ -95,8 +94,9 @@ def model_name(model):
 
 
 def parse_lines(data, events):
-    """Appends [t, cost, id, model, input, output, cache read, cache write, of which 1-hour writes]
-    for each assistant message with usage in a run of JSONL lines."""
+    """Appends [t, cost, id, model, input, output, cache read, cache write, of which 1-hour writes,
+    session id] for each assistant message with usage in a run of JSONL lines; cost is at the
+    table's price, which learn_scales corrects for models whose price the table has wrong."""
     for line in data.split(b'\n'):
         if b'"usage"' not in line or b'"assistant"' not in line:
             continue
@@ -114,7 +114,8 @@ def parse_lines(data, events):
             events.append([t, round(cost, 6), f"{message.get('id')}|{row.get('requestId')}", model_name(message.get('model')),
                            usage.get('input_tokens') or 0, usage.get('output_tokens') or 0,
                            usage.get('cache_read_input_tokens') or 0, usage.get('cache_creation_input_tokens') or 0,
-                           (usage.get('cache_creation') or {}).get('ephemeral_1h_input_tokens') or 0])
+                           (usage.get('cache_creation') or {}).get('ephemeral_1h_input_tokens') or 0,
+                           row.get('sessionId') or ''])
 
 
 def read_file(path, cached):
@@ -183,26 +184,77 @@ def scan_spend(now):
     return events, len(files), reparsed
 
 
-def usd_per_token(events, now):
+def usd_per_token(events, now, scales):
     """What a token costs on each model at your own mix: the last seven days' messages (their
     input, output, cache reads and writes) priced as if every one had gone to that model.
 
     So "how many tokens are left" can be answered per model: the dollars left in a window over
     this. Most of the mix is cache reads, which is why it comes out far below the input price."""
     recent = [e for e in events if e[0] >= now - WEEK] or events
-    tokens = sum(tin + tout + read + write for _t, _c, _m, tin, tout, read, write, _w in recent)
+    tokens = sum(tin + tout + read + write for _t, _c, _m, tin, tout, read, write, _w, _s in recent)
     if tokens == 0:
         return {}
-    models = sorted({e[2] for e in events if price_for('claude-' + e[2])})
     rates = {}
-    for model in models:
+    for model in sorted({e[2] for e in events}):
         usd = sum(
             message_cost({'input_tokens': tin, 'output_tokens': tout, 'cache_read_input_tokens': read,
                           'cache_creation': {'ephemeral_5m_input_tokens': write - w1h, 'ephemeral_1h_input_tokens': w1h}},
                          'claude-' + model)
-            for _t, _c, _m, tin, tout, read, write, w1h in recent)
-        rates[model] = usd / tokens
+            for _t, _c, _m, tin, tout, read, write, w1h, _s in recent)
+        rates[model] = usd / tokens * scales.get(model, 1.0)
     return rates
+
+
+def learn_scales(events, session_costs):
+    """How far each model's table price is from what Claude Code itself charged, learned from
+    sessions whose cost the band recorded (Claude Code's own figure, at current prices).
+
+    Each recorded session's cost should equal the sum over models of (table cost of that model's
+    messages in the session) x (that model's scale). Solved by least squares, one model at a time
+    until it settles. A model the table prices exactly keeps scale 1 unless the evidence is strong
+    and says otherwise (a price change); a model priced from its family or as BASE takes the
+    learned scale as soon as there is a little evidence, and is "estimated" until then.
+
+    Returns ({model: scale}, {model: "list" | "learned" | "estimated"})."""
+    table = {}
+    for t, cost, model, *_rest, session in events:
+        record = session_costs.get(session)
+        if record and t >= record.get('since', 0) - 60_000:
+            table.setdefault(session, {}).setdefault(model, 0.0)
+            table[session][model] += cost
+    sessions = []
+    for session, per_model in table.items():
+        total = sum(per_model.values())
+        charged = session_costs[session]['usd']
+        if total > 0.05 and 0.25 <= charged / total <= 4:
+            sessions.append((charged, per_model))
+    models = {model for _, per_model in sessions for model in per_model}
+    scale = {model: 1.0 for model in models}
+    for _ in range(30):
+        for model in models:
+            num = den = 0.0
+            for charged, per_model in sessions:
+                if model in per_model:
+                    rest = sum(scale[m] * v for m, v in per_model.items() if m != model)
+                    num += per_model[model] * (charged - rest)
+                    den += per_model[model] ** 2
+            if den > 0:
+                scale[model] = min(4.0, max(0.25, num / den))
+    evidence = {model: sum(per_model.get(model, 0.0) for _, per_model in sessions) for model in models}
+    applied, kinds = {}, {}
+    for model in sorted({e[2] for e in events}):
+        kind = price_for('claude-' + model)[1]
+        learned, seen = scale.get(model, 1.0), evidence.get(model, 0.0)
+        if kind == 'list':
+            if seen >= 5 and abs(learned - 1) > 0.1:
+                applied[model], kinds[model] = learned, 'learned'
+            else:
+                applied[model], kinds[model] = 1.0, 'list'
+        elif seen >= 0.5:
+            applied[model], kinds[model] = learned, 'learned'
+        else:
+            applied[model], kinds[model] = 1.0, 'estimated'
+    return applied, kinds
 
 
 def load_history():
@@ -224,7 +276,7 @@ def spend_between(events, start, end):
 def by_model(events, start, end):
     """API cost and tokens per model inside [start, end), most expensive first."""
     totals = {}
-    for t, cost, model, tin, tout, read, write, _write_1h in events:
+    for t, cost, model, tin, tout, read, write, _write_1h, _session in events:
         if start <= t < end:
             row = totals.setdefault(model, {'model': model, 'usd': 0.0, 'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0})
             row['usd'] += cost
@@ -307,9 +359,13 @@ def main():
     args = json.loads(sys.argv[1]) if len(sys.argv) > 1 else {}
     now = int(args.get('now') or time.time() * 1000)
     events, files, reparsed = scan_spend(now)
+    session_costs = {c['sessionId']: c for c in args.get('sessionCosts') or [] if c.get('sessionId') and c.get('usd')}
+    scales, kinds = learn_scales(events, session_costs)
+    events = [(e[0], e[1] * scales.get(e[2], 1.0), *e[2:]) for e in events]
     history = load_history()
     windows = [estimate(w, events, history, now) for w in args.get('windows') or []]
-    print(json.dumps({'at': now, 'windows': windows, 'usdPerToken': usd_per_token(events, now), 'files': files, 'reparsed': reparsed, 'messages': len(events),
+    print(json.dumps({'at': now, 'windows': windows, 'usdPerToken': usd_per_token(events, now, scales), 'prices': kinds,
+                      'scales': {m: round(v, 3) for m, v in scales.items() if v != 1.0}, 'files': files, 'reparsed': reparsed, 'messages': len(events),
                       'hasHistory': bool(history), 'ms': int((time.time() - began) * 1000)}))
 
 

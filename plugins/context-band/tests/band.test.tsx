@@ -40,15 +40,17 @@ const ESTIMATE = {
   usdPerToken: { 'sonnet-5-5': 0.282e-6, 'opus-5-5': 0.368e-6, 'fable-5-1': 0.676e-6 },
 }
 
-async function seed($: Parameters<Parameters<typeof test>[1]>[0], on: Parameters<Parameters<typeof test>[1]>[1], startAt = NOW) {
+let lastEstimatorArg: { sessionCosts?: unknown[] } = {}
+
+async function seed($: Parameters<Parameters<typeof test>[1]>[0], on: Parameters<Parameters<typeof test>[1]>[1], startAt = NOW, estimate: unknown = ESTIMATE) {
   const clock = mock.clock(on, { now: startAt })
   mock.store(on)
   on('session.measure', (_$, e) => ({ changed: [...e.changed] }))
   on('process.run', (_$, e) =>
-    ({
+    (e.argv[0] === 'python3' && (lastEstimatorArg = JSON.parse(e.argv[2] ?? '{}')), {
       value: {
         exitCode: e.argv[0] === 'python3' ? 0 : 1,
-        stdout: e.argv[0] === 'python3' ? JSON.stringify(ESTIMATE) : '',
+        stdout: e.argv[0] === 'python3' ? JSON.stringify(estimate) : '',
         stderr: '',
       },
     }) as never,
@@ -199,4 +201,30 @@ test('at a 95-column desktop band with real figures, every pill fits with no +N'
   await ui.press({ key: 'chart' })
   expect(await ui.find({ key: 'theme' })).toBeDefined()
   await ui.unmount()
+})
+
+test('every model gets a row or a mention, and an estimated price is marked', async ($, on) => {
+  on('session.id', () => ({ value: 'session-1' }) as never)
+  const base = ESTIMATE.windows[0]!
+  const use = (model: string, usd: number) => ({ model, usd, input: 100, output: 1000, cacheRead: 1_000_000, cacheWrite: 10_000 })
+  const six = {
+    ...ESTIMATE,
+    windows: [{ ...base, byModel: [use('fable-5-5', 9), use('fable-5-1', 8), use('opus-6', 7), use('opus-5-5', 6), use('sonnet-5-5', 5), use('haiku-4-5', 1)] }],
+    usdPerToken: { 'fable-5-5': 0.7e-6, 'fable-5-1': 0.676e-6, 'opus-6': 0.5e-6, 'opus-5-5': 0.368e-6, 'sonnet-5-5': 0.282e-6, 'haiku-4-5': 0.141e-6 },
+    prices: { 'fable-5-5': 'learned', 'fable-5-1': 'list', 'opus-6': 'estimated', 'opus-5-5': 'list', 'sonnet-5-5': 'list', 'haiku-4-5': 'list' },
+  }
+  await seed($, on, NOW + 6 * H, six)
+  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'desktop', component: 'AbovePrompt', props: props(200) })
+  await ui.press({ key: 'chart' })
+  await ui.press({ key: 'view-models' })
+  const drawn = JSON.stringify(await ui.find({ type: 'Box' }))
+  // Newest first within a family, every model named, Opus 6 marked as estimated.
+  expect(drawn).toContain('Fable 5.5')
+  expect(drawn).toContain('Haiku 4.5')
+  expect(drawn).toContain('+2 more: Sonnet 5.5, Haiku 4.5')
+  expect(drawn).toContain('≈ Opus 6: price estimated until learned')
+  expect(drawn.indexOf('Fable 5.5')).toBeLessThan(drawn.indexOf('Fable 5.1'))
+  await ui.unmount()
+  // The session's own cost reached the estimator, for it to learn prices from.
+  expect(Array.isArray(lastEstimatorArg.sessionCosts)).toBe(true)
 })

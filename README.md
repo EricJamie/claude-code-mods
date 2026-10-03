@@ -49,9 +49,11 @@ It loads in the next session.
 - macOS for the automatic theme and the desktop usage history; elsewhere those fall back quietly
 - Everything stays on your machine: the mod reads local files and makes no network calls. Its cache is `~/.cache/context-band/`.
 
-### Updating prices
+### Prices and new models
 
-API prices live in `PRICES` in `bin/api_estimate.py`. A new model in a known family is priced like that family's current model until the table is updated.
+List prices live in `PRICES` in `bin/api_estimate.py`, from Anthropic's pricing page (https://platform.claude.com/docs/en/about-claude/pricing).
+
+A model the table doesn't know still works: it gets its own row, priced like its family's current model (a new family is priced like Opus), and its figures are marked **≈** until its price is learned. The band learns it from Claude Code's own cost figure for each session, which always uses current prices, set against the tokens each model used in that session. The same check corrects a listed price that has changed. Updating the table when a model ships is still the quickest fix.
 
 ### Development
 
@@ -113,9 +115,11 @@ Mods are an early-access Claude Code feature; the test runner needs that variabl
 - 自动主题和桌面端用量历史仅支持 macOS，其他系统会自动跳过
 - 所有数据都留在本机：插件只读取本地文件，不联网。缓存位于 `~/.cache/context-band/`。
 
-### 更新价格
+### 价格与新模型
 
-API 价格写在 `bin/api_estimate.py` 的 `PRICES` 表里。同系列的新模型在价格表更新前，会按该系列当前模型的价格估算。
+价格表写在 `bin/api_estimate.py` 的 `PRICES` 里，来源是 Anthropic 官方价格页面（https://platform.claude.com/docs/en/about-claude/pricing）。
+
+价格表里没有的新模型也能正常显示：它会有自己的一行，先按同系列当前模型的价格估算（全新系列按 Opus 估算），在价格学到之前数字前会标 **≈**。插件会用 Claude Code 自己统计的每个会话花费（始终按当前价格计算）对照该会话里各模型用掉的 token，自动学出新模型的真实价格；已有模型如果调价，也会被同样校正。新模型发布时更新价格表仍然是最快的办法。
 
 ### 开发
 

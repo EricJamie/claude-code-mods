@@ -55,7 +55,16 @@ export type ContextBandApiWindow = {
 
 // `usdPerToken`: what a token costs on each model at your own mix of input, output and cache, so
 // the dollars left in a window convert to the tokens left if you used only that model.
-export type ContextBandApi = { at: number; windows: ContextBandApiWindow[]; usdPerToken: Record<string, number> }
+// How each model's price was found: the table has it ("list"), it was learned from Claude Code's
+// own session costs ("learned"), or it is borrowed from its family until learned ("estimated").
+export type ContextBandPriceKind = 'list' | 'learned' | 'estimated'
+
+export type ContextBandApi = {
+  at: number
+  windows: ContextBandApiWindow[]
+  usdPerToken: Record<string, number>
+  priceKinds: Record<string, ContextBandPriceKind>
+}
 
 declare module 'claude-code' {
   interface PluginState {

@@ -6,6 +6,7 @@ import type {
   ContextBandApiWindow,
   ContextBandAppearance,
   ContextBandModelUse,
+  ContextBandPriceKind,
   ContextBandStats,
   ContextBandTheme,
   ContextBandTurn,
@@ -246,7 +247,14 @@ function parseApi(stdout: string): ContextBandApi | null {
         if (typeof value === 'number' && value > 0) usdPerToken[model] = value
       }
     }
-    return { at: num(raw.at), windows, usdPerToken }
+    const kinds = (raw as { prices?: unknown }).prices
+    const priceKinds: Record<string, ContextBandPriceKind> = {}
+    if (kinds && typeof kinds === 'object') {
+      for (const [model, kind] of Object.entries(kinds as Record<string, unknown>)) {
+        if (kind === 'list' || kind === 'learned' || kind === 'estimated') priceKinds[model] = kind
+      }
+    }
+    return { at: num(raw.at), windows, usdPerToken, priceKinds }
   } catch {
     return null
   }
@@ -510,7 +518,16 @@ const tokensLeft = (w: ContextBandApiWindow, pct: number, usdPerToken: Record<st
 // the models, "tokens left" heads the answer column, tinted in the window's color so the eye lands
 // there, and a bar per row scales those numbers against the largest. Tokens already used sit in a
 // small grey column. The foot says why the numbers differ: the same dollars at each model's price.
-function modelsBody(w: ContextBandApiWindow, pct: number, models: string[], usdPerToken: Record<string, number>, p: Palette, t: number, width: number) {
+function modelsBody(
+  w: ContextBandApiWindow,
+  pct: number,
+  models: string[],
+  usdPerToken: Record<string, number>,
+  priceKinds: Record<string, ContextBandPriceKind>,
+  p: Palette,
+  t: number,
+  width: number,
+) {
   const tone = p.tones[windowTone(w.kind)]
   const nums = 'style="font-variant-numeric: tabular-nums"'
   const parts: string[] = [cardFrame(w, pct, p, t, width)]
@@ -519,10 +536,17 @@ function modelsBody(w: ContextBandApiWindow, pct: number, models: string[], usdP
   const columnX = width - 126
   const barX = 100
   const barW = Math.max(20, columnX - 10 - barX)
-  const lefts = models.map(model => tokensLeft(w, pct, usdPerToken, model))
+  // Every model gets a row: four at the usual spacing, five a little tighter, and past five the
+  // last slot names the rest rather than leaving them out.
+  const slots = Math.min(models.length, 5)
+  const first = slots <= 4 ? 99 : 97
+  const step = slots <= 4 ? 20 : 16
+  const rows = models.length > 5 ? models.slice(0, 4) : models
+  const rest = models.length > 5 ? models.slice(4) : []
+  const lefts = rows.map(model => tokensLeft(w, pct, usdPerToken, model))
   const most = Math.max(0, ...lefts.map(v => v ?? 0))
-  if (models.length > 0) {
-    const bottom = 99 + 20 * (models.length - 1) + 7
+  if (rows.length > 0) {
+    const bottom = first + step * (rows.length - 1) + 7
     parts.push(`<rect x="${columnX}" y="65" width="66" height="${bottom - 65}" rx="7" fill="${tone.accent}" fill-opacity="${p.tint}"/>`)
   }
   parts.push(`<text x="16" y="78" font-size="11" font-weight="500" fill="${p.text}">If you use only…</text>`)
@@ -532,8 +556,8 @@ function modelsBody(w: ContextBandApiWindow, pct: number, models: string[], usdP
   if (models.length === 0) {
     parts.push(`<text x="16" y="102" font-size="12" fill="${p.muted}">No Claude Code usage this week yet</text>`)
   }
-  models.forEach((model, i) => {
-    const y = 99 + i * 20
+  rows.forEach((model, i) => {
+    const y = first + i * step
     const color = modelColor(p, model)
     const used = w.byModel.find(m => m.model === model)
     const left = lefts[i] ?? null
@@ -543,21 +567,33 @@ function modelsBody(w: ContextBandApiWindow, pct: number, models: string[], usdP
     if (left !== null && most > 0) {
       parts.push(`<rect x="${barX}" y="${y - 7.2}" width="${Math.max(3, (barW * left) / most).toFixed(1)}" height="6" rx="3" fill="${color}"/>`)
     }
-    parts.push(`<text x="${leftR}" y="${y}" font-size="13" font-weight="700" text-anchor="end" fill="${p.text}" ${nums}>${esc(left !== null ? fmtTokens(left) : '—')}</text>`)
+    const mark = priceKinds[model] === 'estimated' ? '≈ ' : ''
+    parts.push(`<text x="${leftR}" y="${y}" font-size="13" font-weight="700" text-anchor="end" fill="${p.text}" ${nums}>${esc(left !== null ? `${mark}${fmtTokens(left)}` : '—')}</text>`)
     parts.push(`<text x="${usedR}" y="${y}" font-size="10.5" text-anchor="end" fill="${p.muted}" ${nums}>${esc(used ? fmtTokens(tokensOf(used)) : 'none')}</text>`)
   })
+  if (rest.length > 0) {
+    parts.push(`<text x="16" y="${first + 4 * step}" font-size="10.5" fill="${p.muted}">${esc(`+${rest.length} more: ${rest.map(modelLabel).join(', ')}`)}</text>`)
+  }
+  // A model whose price is borrowed from its family says so until its price is learned.
+  const estimated = models.filter(model => priceKinds[model] === 'estimated').map(modelLabel)
   const left = usdLeft(w, pct)
-  const foot = left !== null ? `Same ${fmtUsd(left)} left, spent at each model’s price` : 'Not enough usage yet to estimate what is left'
+  const foot =
+    estimated.length > 0
+      ? `≈ ${estimated.join(', ')}: price${estimated.length > 1 ? 's' : ''} estimated until learned`
+      : left !== null
+        ? `Same ${fmtUsd(left)} left, spent at each model’s price`
+        : 'Not enough usage yet to estimate what is left'
   parts.push(`<text x="16" y="${CARD_H - 10}" font-size="10.5" fill="${p.muted}">${esc(foot)}</text>`)
   return parts.join('')
 }
 
 // The terminal's By model line for one window.
-const modelsLine = (w: ContextBandApiWindow, pct: number, models: string[], usdPerToken: Record<string, number>) => {
+const modelsLine = (w: ContextBandApiWindow, pct: number, models: string[], usdPerToken: Record<string, number>, priceKinds: Record<string, ContextBandPriceKind> = {}) => {
   const rows = models.map(model => {
     const used = w.byModel.find(m => m.model === model)
     const left = tokensLeft(w, pct, usdPerToken, model)
-    return `${modelLabel(model)} ${used ? fmtTokens(tokensOf(used)) : '0'} used${left !== null ? `, ${fmtTokens(left)} left if only it` : ''}`
+    const mark = priceKinds[model] === 'estimated' ? '≈ ' : ''
+    return `${modelLabel(model)} ${used ? fmtTokens(tokensOf(used)) : '0'} used${left !== null ? `, ${mark}${fmtTokens(left)} left if only it` : ''}`
   })
   const left = usdLeft(w, pct)
   return `${limitLabel(w.kind)} window: ${rows.length > 0 ? rows.join(' · ') : 'no Claude Code usage yet'}${left !== null ? ` · ${fmtUsd(left)} left` : ''}`
@@ -568,8 +604,16 @@ const SANS = `font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvet
 const chartSvg = (w: ContextBandApiWindow, mode: ContextBandTheme, t: number, width: number, usdPerToken: Record<string, number>) =>
   themedSvg(width, CARD_H, SANS, mode, p => chartBody(w, p, t, width, usdPerToken))
 
-const modelsSvg = (w: ContextBandApiWindow, pct: number, models: string[], usdPerToken: Record<string, number>, mode: ContextBandTheme, t: number, width: number) =>
-  themedSvg(width, CARD_H, SANS, mode, p => modelsBody(w, pct, models, usdPerToken, p, t, width))
+const modelsSvg = (
+  w: ContextBandApiWindow,
+  pct: number,
+  models: string[],
+  usdPerToken: Record<string, number>,
+  priceKinds: Record<string, ContextBandPriceKind>,
+  mode: ContextBandTheme,
+  t: number,
+  width: number,
+) => themedSvg(width, CARD_H, SANS, mode, p => modelsBody(w, pct, models, usdPerToken, priceKinds, p, t, width))
 
 const MINI_W = 96
 const MINI_H = 16
@@ -768,6 +812,26 @@ function fitPills(pills: Pill[], budget: number, widthOf: (pill: Pill) => number
 const scan = { at: 0, isRunning: false }
 const layout = { surface: '', bodyColumns: 0, saved: '' }
 
+// Each session's cost as Claude Code itself counts it, at current prices, kept so the estimator
+// can learn the price of a model its table does not know (or has wrong): it sets that cost
+// against the tokens each model used in the session.
+const recorded = { usd: -1 }
+
+type SessionCostRecord = { usd: number; since: number; at: number }
+
+async function recordSessionCost($: EngineInterface, usd: number) {
+  if (Math.abs(usd - recorded.usd) < 0.01) return
+  recorded.usd = usd
+  const id = await $.session.id()
+  const since = (await $.session.usage()).startedAt
+  const at = await $.clock.now()
+  const stored = await $.store.get('sessionCosts')
+  const costs: Record<string, SessionCostRecord> = stored && typeof stored === 'object' ? { ...(stored as Record<string, SessionCostRecord>) } : {}
+  costs[id] = { usd, since, at }
+  const newest = Object.entries(costs).sort((a, b) => b[1].at - a[1].at).slice(0, 80)
+  await $.store.set('sessionCosts', Object.fromEntries(newest))
+}
+
 // Runs bin/api_estimate.py: the API-equivalent spend inside each rate-limit window.
 async function scanApi($: EngineInterface, minGapMs: number) {
   const t = await $.clock.now()
@@ -777,7 +841,12 @@ async function scanApi($: EngineInterface, minGapMs: number) {
   scan.isRunning = true
   scan.at = t
   try {
-    const arg = JSON.stringify({ now: t, windows: limits.map(l => ({ kind: l.kind, pct: l.percentUsed, resetsAt: l.resetsAt })) })
+    const stored = await $.store.get('sessionCosts')
+    const sessionCosts =
+      stored && typeof stored === 'object'
+        ? Object.entries(stored as Record<string, SessionCostRecord>).map(([sessionId, c]) => ({ sessionId, usd: c.usd, since: c.since }))
+        : []
+    const arg = JSON.stringify({ now: t, windows: limits.map(l => ({ kind: l.kind, pct: l.percentUsed, resetsAt: l.resetsAt })), sessionCosts })
     const { exitCode, stdout } = await $.process.run(['python3', `${$.plugin.root}/bin/api_estimate.py`, arg], { timeoutMs: 60_000 })
     const parsed = exitCode === 0 ? parseApi(stdout) : null
     const current = await read($, api)
@@ -873,6 +942,11 @@ export const register: Register = on => {
   on('session.measure', async ($, e, next) => {
     const next_ = toUsage(e)
     if (JSON.stringify(await read($, usage)) !== JSON.stringify(next_)) await update($, usage, () => next_)
+    if (e.cost) {
+      try {
+        await recordSessionCost($, e.cost.usd)
+      } catch {}
+    }
     // After each turn and each move of a limit: a warm scan reads only new transcript lines.
     void scanApi($, 15_000)
     return next(e)
@@ -917,10 +991,11 @@ export const register: Register = on => {
     const apiState = await read($, api)
     const estimates = apiState?.windows ?? []
     const usdPerToken = apiState?.usdPerToken ?? {}
+    const priceKinds = apiState?.priceKinds ?? {}
     // The models every By model card lists: those used in any window, in tier order so rows keep
-    // their places as costs move, four at most.
+    // their places as costs move, the newest version first within a family.
     const used = new Set(estimates.flatMap(w => w.byModel.map(m => m.model)))
-    const models = [...used].sort((a, b) => tierRank(a) - tierRank(b) || b.localeCompare(a)).slice(0, 4)
+    const models = [...used].sort((a, b) => tierRank(a) - tierRank(b) || b.localeCompare(a, undefined, { numeric: true }))
     layout.surface = e.surface
     layout.bodyColumns = e.props.bodyColumns
 
@@ -1033,7 +1108,7 @@ export const register: Register = on => {
           {isOpen
             ? estimates.map(w => (
                 <Text color={toneOf(w).accent} wrap="truncate">
-                  {view === 'models' ? modelsLine(w, pctOf(w.kind), models, usdPerToken) : chartLine(w, pctOf(w.kind), t)}
+                  {view === 'models' ? modelsLine(w, pctOf(w.kind), models, usdPerToken, priceKinds) : chartLine(w, pctOf(w.kind), t)}
                 </Text>
               ))
             : null}
@@ -1091,10 +1166,10 @@ export const register: Register = on => {
           <Box flexDirection="row" gap={1} marginBottom={1}>
             {estimates.map(w => (
               <Svg
-                source={view === 'models' ? modelsSvg(w, pctOf(w.kind), models, usdPerToken, mode, t, cardWidth) : chartSvg(w, mode, t, cardWidth, usdPerToken)}
+                source={view === 'models' ? modelsSvg(w, pctOf(w.kind), models, usdPerToken, priceKinds, mode, t, cardWidth) : chartSvg(w, mode, t, cardWidth, usdPerToken)}
                 alt={
                   view === 'models'
-                    ? modelsLine(w, pctOf(w.kind), models, usdPerToken)
+                    ? modelsLine(w, pctOf(w.kind), models, usdPerToken, priceKinds)
                     : w.rateUsd
                       ? `${limitLabel(w.kind)} window ≈ ${fmtUsd(w.rateUsd)} at API prices`
                       : `${limitLabel(w.kind)} window: estimating`
