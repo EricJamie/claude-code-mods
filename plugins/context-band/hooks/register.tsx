@@ -5,6 +5,7 @@ import type {
   ContextBandApi,
   ContextBandApiWindow,
   ContextBandAppearance,
+  ContextBandCache,
   ContextBandModelUse,
   ContextBandPriceKind,
   ContextBandStats,
@@ -27,12 +28,16 @@ const api = atom({ plugin: 'context-band', key: 'api' } as const, null)
 const isChartOpen = atom({ plugin: 'context-band', key: 'isChartOpen' } as const, false)
 const isRowExpanded = atom({ plugin: 'context-band', key: 'isRowExpanded' } as const, false)
 const chartView = atom({ plugin: 'context-band', key: 'chartView' } as const, 'chart')
+const NO_CACHE: ContextBandCache = { startedAt: 0, ttlMs: null, writeUsdPerMTok: null, readUsdPerMTok: null }
+const cacheState = atom({ plugin: 'context-band', key: 'cache' } as const, NO_CACHE)
+// The second the cache countdown last moved: written each second while it runs, so the band redraws.
+const tick = atom({ plugin: 'context-band', key: 'tick' } as const, 0)
 
 const THEMES: readonly ContextBandTheme[] = ['auto', 'light', 'dark']
 
 type Tone = { bg: string; accent: string }
 type ToneKey = 'fiveHour' | 'sevenDay' | 'input' | 'output' | 'speed' | 'cache' | 'cost' | 'ctx'
-type Level = 'normal' | 'warn' | 'danger'
+type Level = 'normal' | 'warn' | 'danger' | 'muted'
 type Palette = {
   card: string
   text: string
@@ -161,6 +166,17 @@ async function refreshUsage($: EngineInterface) {
   } catch {}
 }
 
+// The cache countdown shows seconds, so while it runs the band redraws each second; once the entry
+// has expired (and the band has said so) the ticking stops until the next request starts another.
+async function tickCache($: EngineInterface) {
+  const c = await read($, cacheState)
+  if (!c.startedAt || !c.ttlMs) return
+  const t = await $.clock.now()
+  if (t > c.startedAt + c.ttlMs + 2000) return
+  const second = t - (t % 1000)
+  if ((await read($, tick)) !== second) await update($, tick, () => second)
+}
+
 async function refreshClock($: EngineInterface) {
   // Countdowns show minutes, so the band needs a new time once a minute, not every tick.
   const t = await $.clock.now()
@@ -255,6 +271,18 @@ function parseApi(stdout: string): ContextBandApi | null {
       }
     }
     return { at: num(raw.at), windows, usdPerToken, priceKinds }
+  } catch {
+    return null
+  }
+}
+
+// The main conversation's cache lifetime and prices, as the estimator read them from its transcript.
+function parseCacheInfo(stdout: string): Omit<ContextBandCache, 'startedAt'> | null {
+  try {
+    const raw = (JSON.parse(stdout) as { session?: Record<string, unknown> }).session
+    if (!raw || typeof raw.cacheTtlMs !== 'number' || raw.cacheTtlMs <= 0) return null
+    const price = (v: unknown) => (typeof v === 'number' && v > 0 ? v : null)
+    return { ttlMs: raw.cacheTtlMs, writeUsdPerMTok: price(raw.cacheWriteUsdPerMTok), readUsdPerMTok: price(raw.cacheReadUsdPerMTok) }
   } catch {
     return null
   }
@@ -922,9 +950,94 @@ function stripBody(w: ContextBandApiWindow, pct: number, p: Palette, t: number, 
 const stripSvg = (w: ContextBandApiWindow, pct: number, mode: ContextBandTheme, t: number, width: number) =>
   themedSvg(width, PILL_H, MONO, mode, p => stripBody(w, pct, p, t, width))
 
+// The main conversation's prompt cache. An entry lives a fixed time (1 hour or 5 minutes) from the
+// start of the last request that read or wrote it, and every request restarts that time; once it
+// lapses, the next message writes the whole context to the cache again at the write price.
+type CacheTimer = { leftMs: number; ttlMs: number; tokens: number; writeUsd: number | null; readUsd: number | null }
+
+function cacheTimer(c: ContextBandCache, t: number, ctxTokens: number | null): CacheTimer | null {
+  if (!c.startedAt || !c.ttlMs) return null
+  const tokens = ctxTokens ?? 0
+  return {
+    leftMs: c.startedAt + c.ttlMs - t,
+    ttlMs: c.ttlMs,
+    tokens,
+    writeUsd: c.writeUsdPerMTok !== null && tokens > 0 ? (tokens * c.writeUsdPerMTok) / 1e6 : null,
+    readUsd: c.readUsdPerMTok !== null && tokens > 0 ? (tokens * c.readUsdPerMTok) / 1e6 : null,
+  }
+}
+
+// "59:41", "07:05" for the 1-hour cache (two-digit minutes, so the pill keeps its width); "4:59" for 5 minutes.
+const fmtClock = (ms: number, ttlMs: number) => {
+  const seconds = Math.max(0, Math.ceil(ms / 1000))
+  const minutes = String(Math.floor(seconds / 60))
+  return `${ttlMs >= 600_000 ? minutes.padStart(2, '0') : minutes}:${String(seconds % 60).padStart(2, '0')}`
+}
+
+// Orange in the last sixth of the entry's life (10 minutes of an hour), red in the last 2 minutes.
+const cacheLevel = (timer: CacheTimer): Level =>
+  timer.leftMs <= 0 ? 'muted' : timer.leftMs <= timer.ttlMs / 30 ? 'danger' : timer.leftMs <= timer.ttlMs / 6 ? 'warn' : 'normal'
+
+type StripPiece = { rank: number; text: string; color: string; isBold?: boolean }
+
+// The cache pill's hover strip: what the next message costs while the cache is warm, and what it
+// costs once it has lapsed, so it is plain what keeping it warm is worth.
+function cachePieces(timer: CacheTimer, detail: string, p: Palette): StripPiece[] {
+  const accent = p.tones.cache.accent
+  const life = timer.ttlMs >= 3_600_000 ? '1h' : `${Math.round(timer.ttlMs / 60_000)}m`
+  const size = timer.tokens > 0 ? fmtTokens(timer.tokens) : 'the context'
+  const read = timer.readUsd !== null ? `≈ ${fmtUsd(timer.readUsd)}` : `reads ${size}`
+  const write = timer.writeUsd !== null ? `≈ ${fmtUsd(timer.writeUsd)}` : `re-caches ${size}`
+  const context = [...(timer.tokens > 0 ? [`${size} context`] : []), detail].join(' · ')
+  if (timer.leftMs <= 0) {
+    return [
+      { rank: 0, text: `${life} cache expired`, color: accent, isBold: true },
+      { rank: 1, text: `next message re-caches ${size}${timer.writeUsd !== null ? ` ${write}` : ''}`, color: p.text },
+      ...(timer.readUsd !== null ? [{ rank: 2, text: `warm ${read}`, color: p.muted }] : []),
+      { rank: 4, text: detail, color: p.muted },
+    ]
+  }
+  return [
+    { rank: 0, text: `${life} cache`, color: accent, isBold: true },
+    { rank: 2, text: `warm: next message ${read}`, color: p.text },
+    { rank: 1, text: `after expiry ${write}`, color: p.text },
+    { rank: 3, text: 'each message restarts it', color: p.muted },
+    { rank: 4, text: context, color: p.muted },
+  ]
+}
+
+// A one-line strip of words, keeping the pieces that fit in order of importance, a dot between them.
+function textStripBody(pieces: StripPiece[], accent: string, p: Palette, width: number) {
+  const mid = PILL_H / 2
+  const gap = CH * 3
+  const kept = new Set<StripPiece>()
+  let used = 0
+  for (const piece of [...pieces].sort((a, b) => a.rank - b.rank)) {
+    const cost = piece.text.length * CH + (kept.size > 0 ? gap : 0)
+    if (used + cost > width - PILL_PAD * 2 && piece.rank > 0) continue
+    kept.add(piece)
+    used += cost
+  }
+  const parts: string[] = [`<rect x="0.5" y="0.5" width="${width - 1}" height="${PILL_H - 1}" rx="7" fill="${p.card}" stroke="${accent}"/>`]
+  let x = PILL_PAD
+  pieces.filter(piece => kept.has(piece)).forEach((piece, i) => {
+    if (i > 0) {
+      parts.push(`<text x="${(x + CH).toFixed(1)}" y="${mid}" dominant-baseline="central" fill="${p.muted}">·</text>`)
+      x += gap
+    }
+    parts.push(`<text x="${x.toFixed(1)}" y="${mid}" dominant-baseline="central" fill="${piece.color}"${piece.isBold ? ' font-weight="700"' : ''}>${esc(piece.text)}</text>`)
+    x += piece.text.length * CH
+  })
+  return parts.join('')
+}
+
+const cacheStripSvg = (timer: CacheTimer, detail: string, mode: ContextBandTheme, width: number) =>
+  themedSvg(width, PILL_H, MONO, mode, p => textStripBody(cachePieces(timer, detail, p), p.tones.cache.accent, p, width))
+
 const levelOf = (percent: number): Level => (percent >= 85 ? 'danger' : percent >= 60 ? 'warn' : 'normal')
 
-const levelColor = (p: Palette, level: Level | undefined) => (level === 'danger' ? p.danger : level === 'warn' ? p.warn : p.text)
+const levelColor = (p: Palette, level: Level | undefined) =>
+  level === 'danger' ? p.danger : level === 'warn' ? p.warn : level === 'muted' ? p.muted : p.text
 
 const windowTone = (kind: string): ToneKey => (isFiveHour(kind) ? 'fiveHour' : 'sevenDay')
 
@@ -978,7 +1091,6 @@ async function scanApi($: EngineInterface, minGapMs: number) {
   const t = await $.clock.now()
   if (scan.isRunning || t - scan.at < minGapMs) return
   const limits = (await read($, usage))?.limits ?? []
-  if (limits.length === 0) return
   scan.isRunning = true
   scan.at = t
   try {
@@ -1000,6 +1112,12 @@ async function scanApi($: EngineInterface, minGapMs: number) {
       scan.hasSeeded = true
       const seen = parseSession(stdout)
       if (seen && seen.requests > 0) await update($, stats, s => (s.requests === 0 ? seen : s))
+    }
+    const cacheInfo = parsed ? parseCacheInfo(stdout) : null
+    if (cacheInfo) {
+      await update($, cacheState, c =>
+        c.ttlMs === cacheInfo.ttlMs && c.writeUsdPerMTok === cacheInfo.writeUsdPerMTok && c.readUsdPerMTok === cacheInfo.readUsdPerMTok ? c : { ...c, ...cacheInfo },
+      )
     }
   } catch {
   } finally {
@@ -1035,6 +1153,7 @@ export const register: Register = on => {
     await refreshClock($)
     await refreshUsage($)
     void scanApi($, 0)
+    $.clock.every(1000, () => void tickCache($))
     $.clock.every(30_000, () => {
       void refreshClock($)
       void read($, theme).then(mode => (mode === 'auto' ? refreshAppearance($) : undefined))
@@ -1045,6 +1164,8 @@ export const register: Register = on => {
   })
 
   on('turn.step', async function* ($, e, next) {
+    // A cache entry lives from the start of the request that last read or wrote it.
+    const startedAt = e.agentId ? 0 : await $.clock.now()
     const stream = next(e)
     let firstAt = 0
     for await (const chunk of stream) {
@@ -1062,6 +1183,9 @@ export const register: Register = on => {
           cacheWrite: s.cacheWrite + u.cache_creation_input_tokens,
           requests: s.requests + 1,
         }))
+        if (startedAt > 0 && (u.cache_read_input_tokens > 0 || u.cache_creation_input_tokens > 0)) {
+          await update($, cacheState, c => (startedAt > c.startedAt ? { ...c, startedAt } : c))
+        }
         if (!e.agentId && firstAt > 0) {
           const ms = (await $.clock.now()) - firstAt
           const acc = speed.get(e.turnId) ?? { tokens: 0, ms: 0 }
@@ -1087,6 +1211,11 @@ export const register: Register = on => {
       await refreshUsage($)
     }
     return done
+  })
+
+  on('session.end', async ($, e, next) => {
+    if (e.reason === 'clear') await update($, cacheState, c => ({ ...c, startedAt: 0 }))
+    return next(e)
   })
 
   on('session.measure', async ($, e, next) => {
@@ -1174,18 +1303,27 @@ export const register: Register = on => {
     if (turn?.tps) {
       pills.push({ id: 'speed', tone: 'speed', icon: 'bolt', value: `${Math.round(turn.tps)} t/s`, priority: 5.5 })
     }
+    // The cache pill counts down to when the main conversation's cache entry lapses, once a request
+    // has started the count; until then it shows the tokens cached. Read in seconds, off the tick.
+    await read($, tick)
+    const timer = cacheTimer(await read($, cacheState), await $.clock.now(), u?.ctxTokens ?? null)
+    const cached = s.cacheRead + s.cacheWrite
+    const prompt = s.input + cached
+    const hitRate = prompt > 0 ? `${Math.round((s.cacheRead / prompt) * 100)}% hit` : null
+    const cacheDetail = [`${fmtTok3(cached)} cached`, ...(hitRate ? [hitRate] : [])].join(' · ')
     if (s.requests > 0) {
-      const cached = s.cacheRead + s.cacheWrite
-      const prompt = s.input + cached
       pills.push({
         id: 'cache',
         tone: 'cache',
         label: 'cache',
         labelIsAccent: true,
-        value: fmtTok3(cached),
-        sub: prompt > 0 ? `${Math.round((s.cacheRead / prompt) * 100)}% hit` : undefined,
-        priority: 9,
+        value: timer ? (timer.leftMs > 0 ? fmtClock(timer.leftMs, timer.ttlMs) : 'expired') : fmtTok3(cached),
+        ...(timer ? { level: cacheLevel(timer), isBold: timer.leftMs > 0 } : {}),
+        sub: timer ? [fmtTok3(cached), ...(hitRate ? [hitRate] : [])].join(' · ') : (hitRate ?? undefined),
+        // A running countdown is worth more than the token counts: it stays while in and out give way.
+        priority: timer ? 5.2 : 9,
         subPriority: 18,
+        scope: timer ? 'cb-cache' : undefined,
       })
     }
     if (u?.costUsd !== null && u?.costUsd !== undefined) {
@@ -1244,11 +1382,16 @@ export const register: Register = on => {
       return end
     }, 0)
     // The hover strips assume one line, so the expanded band goes without them.
+    // The cache pill sits late in the row, so its strip opens on whichever side has more room.
     const strips = (isExpanded ? [] : shown).flatMap(pill => {
       const w = estimateOf(pill)
-      if (!pill.scope || !w) return []
-      const left = Math.ceil(ends.get(pill.id) ?? 0) + 1
-      return [{ scope: pill.scope, w, left, width: Math.max(20, columns - left - 1) }]
+      const isCache = pill.id === 'cache' && timer !== null
+      if (!pill.scope || (!w && !isCache)) return []
+      const end = Math.ceil(ends.get(pill.id) ?? 0)
+      const start = Math.floor(end - widthOf(pill))
+      const right = { left: end + 1, width: Math.max(20, columns - end - 2) }
+      const side = isCache && start - 1 > columns - end - 2 ? { left: 0, width: Math.max(20, start - 1) } : right
+      return [{ scope: pill.scope, w, ...side }]
     })
 
     if (isTerminalSurface) {
@@ -1300,8 +1443,8 @@ export const register: Register = on => {
             {isOpen && estimates.length > 0 ? <Button key="view" label={view === 'chart' ? 'By model' : 'Chart'} plain dimColor onPress={switchView} /> : null}
             {strips.map(strip => (
               <Box position="absolute" top={0} left={strip.left} width={strip.width} display="none" hover={{ scope: strip.scope, display: 'flex' }}>
-                <Text backgroundColor={toneOf(strip.w).bg} color={p.text} wrap="truncate">
-                  {` ${chartLine(strip.w, t, usdPerToken)} `}
+                <Text backgroundColor={strip.w ? toneOf(strip.w).bg : p.tones.cache.bg} color={p.text} wrap="truncate">
+                  {strip.w ? ` ${chartLine(strip.w, t, usdPerToken)} ` : timer ? ` ${cachePieces(timer, cacheDetail, p).map(piece => piece.text).join(' · ')} ` : ''}
                 </Text>
               </Box>
             ))}
@@ -1356,7 +1499,11 @@ export const register: Register = on => {
             const width = Math.floor(strip.width * CELL_PX)
             return (
               <Box position="absolute" top={0} left={strip.left} width={strip.width} display="none" hover={{ scope: strip.scope, display: 'flex' }}>
-                <Svg source={stripSvg(strip.w, pctOf(strip.w.kind), mode, t, width)} alt={chartLine(strip.w, t, usdPerToken)} width={width} height={PILL_H} />
+                {strip.w ? (
+                  <Svg source={stripSvg(strip.w, pctOf(strip.w.kind), mode, t, width)} alt={chartLine(strip.w, t, usdPerToken)} width={width} height={PILL_H} />
+                ) : timer ? (
+                  <Svg source={cacheStripSvg(timer, cacheDetail, mode, width)} alt={cachePieces(timer, cacheDetail, LIGHT).map(piece => piece.text).join(' · ')} width={width} height={PILL_H} />
+                ) : null}
               </Box>
             )
           })}
