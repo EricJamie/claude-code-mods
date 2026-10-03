@@ -30,7 +30,7 @@ const chartView = atom({ plugin: 'context-band', key: 'chartView' } as const, 'c
 const THEMES: readonly ContextBandTheme[] = ['auto', 'light', 'dark']
 
 type Tone = { bg: string; accent: string }
-type ToneKey = 'fiveHour' | 'sevenDay' | 'input' | 'output' | 'speed' | 'cache' | 'cost' | 'ctx' | 'model' | 'turn'
+type ToneKey = 'fiveHour' | 'sevenDay' | 'input' | 'output' | 'speed' | 'cache' | 'cost' | 'ctx'
 type Level = 'normal' | 'warn' | 'danger'
 type Palette = {
   card: string
@@ -64,8 +64,6 @@ const LIGHT: Palette = {
     cache: { bg: '#DEE3FA', accent: '#4A5BD4' },
     cost: { bg: '#F4EACB', accent: '#B07D12' },
     ctx: { bg: '#E3E5EA', accent: '#4B5563' },
-    model: { bg: '#EFE2F3', accent: '#8A4FA0' },
-    turn: { bg: '#F3E5DA', accent: '#A0603A' },
   },
   models: { opus: '#D85A30', sonnet: '#1D9E75', fable: '#7F77DD', haiku: '#888780', other: '#B4B2A9' },
   tint: 0.1,
@@ -89,8 +87,6 @@ const DARK: Palette = {
     cache: { bg: '#232A55', accent: '#8F9CFF' },
     cost: { bg: '#3D331A', accent: '#E9B949' },
     ctx: { bg: '#2C2F35', accent: '#A3AAB6' },
-    model: { bg: '#35253B', accent: '#D39BEA' },
-    turn: { bg: '#3A2A20', accent: '#E0A27A' },
   },
   models: { opus: '#F0997B', sonnet: '#5DCAA5', fable: '#AFA9EC', haiku: '#B4B2A9', other: '#888780' },
   tint: 0.16,
@@ -98,7 +94,7 @@ const DARK: Palette = {
   area: 0.22,
 }
 
-type IconName = 'gauge' | 'calendar' | 'bolt' | 'coin' | 'doc' | 'chip' | 'timer'
+type IconName = 'gauge' | 'calendar' | 'bolt' | 'coin' | 'doc'
 
 const ICON_PATHS: Record<IconName, string> = {
   gauge: '<path d="M4.6 17.5a8.5 8.5 0 1 1 14.8 0"/><path d="M12 14l3.6-3.6"/><circle cx="12" cy="14" r="1.2"/>',
@@ -106,8 +102,6 @@ const ICON_PATHS: Record<IconName, string> = {
   bolt: '<path d="M13 2.5L4.5 13.5h6.5l-1 8 8.5-11h-6.5z"/>',
   coin: '<circle cx="12" cy="12" r="9"/><path d="M14.8 9.4c-.5-.9-1.5-1.4-2.8-1.4-1.6 0-2.8.8-2.8 2s1.2 1.7 2.8 2 2.8.8 2.8 2-1.2 2-2.8 2c-1.3 0-2.3-.5-2.8-1.4M12 6.5V8M12 16v1.5"/>',
   doc: '<rect x="5" y="3" width="14" height="18" rx="2.5"/><path d="M9 8.5h6M9 12h6M9 15.5h3.5"/>',
-  chip: '<rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3.5V7M14 3.5V7M10 17v3.5M14 17v3.5M3.5 10H7M3.5 14H7M17 10h3.5M17 14h3.5"/>',
-  timer: '<circle cx="12" cy="13.5" r="7.5"/><path d="M12 10v3.5l2.4 2.4M9.5 2.5h5"/>',
 }
 
 const GLYPHS: Record<IconName, string> = {
@@ -116,8 +110,6 @@ const GLYPHS: Record<IconName, string> = {
   bolt: 'ϟ',
   coin: '$',
   doc: '▤',
-  chip: '◆',
-  timer: '◷',
 }
 
 const svgIcon = (name: IconName, color: string) =>
@@ -146,21 +138,12 @@ const fmtLeft = (ms: number) => {
   return days > 0 ? `${days}d${hours}h` : hours > 0 ? `${hours}h${mins}m` : `${mins}m`
 }
 
-const fmtDuration = (ms: number) => {
-  const seconds = Math.round(ms / 1000)
-  if (seconds < 60) return `${seconds}s`
-  const minutes = Math.floor(seconds / 60)
-  return minutes < 60 ? `${minutes}m${seconds % 60}s` : `${Math.floor(minutes / 60)}h${minutes % 60}m`
-}
-
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
 const limitLabel = (kind: string) =>
   kind === 'five_hour' ? '5h' : kind === 'seven_day' ? '7d' : kind.replace('seven_day_', '7d ').replace(/_/g, ' ')
 
 const isFiveHour = (kind: string) => kind.startsWith('five_hour')
-
-const shortModel = (model: string) => model.replace(/^claude-/, '').replace(/-\d{8}$/, '').replace(/\[.*\]$/, '')
 
 const toUsage = (u: { context: SessionContextUsage; rateLimits: readonly SessionRateLimit[]; cost?: SessionCost }): ContextBandUsage => ({
   ctxPercent: u.context.percent ?? null,
@@ -660,10 +643,10 @@ const CH = PILL_FONT * 0.6
 const PILL_PAD = 6
 const PILL_ICON = 13
 const SP = 5
-const PILL_GAP = 5
+const PILL_GAP = 4
 const MONO = `font-family="ui-monospace, 'SF Mono', SFMono-Regular, Menlo, monospace" font-size="${PILL_FONT}"`
 // The desktop's cell, in CSS pixels, as offsets and widths in cells are drawn there.
-const CELL_PX = 7.6
+const CELL_PX = 7.7
 
 const pillPx = (pill: Pill) =>
   PILL_PAD * 2 +
@@ -964,7 +947,7 @@ export const register: Register = on => {
       pills.push({ id: 'out', tone: 'output', label: 'out', labelIsAccent: true, value: fmtTok3(s.output), priority: 8 })
     }
     if (turn?.tps) {
-      pills.push({ id: 'speed', tone: 'speed', icon: 'bolt', value: `~${Math.round(turn.tps)} t/s`, priority: 5.5 })
+      pills.push({ id: 'speed', tone: 'speed', icon: 'bolt', value: `${Math.round(turn.tps)} t/s`, priority: 5.5 })
     }
     if (s.requests > 0) {
       const cached = s.cacheRead + s.cacheWrite
@@ -997,10 +980,6 @@ export const register: Register = on => {
         subPriority: 15,
       })
     }
-    if (turn) {
-      pills.push({ id: 'turn', tone: 'turn', icon: 'timer', value: fmtDuration(turn.durationMs), priority: 19 })
-      if (turn.model) pills.push({ id: 'model', tone: 'model', icon: 'chip', value: shortModel(turn.model), priority: 20 })
-    }
 
     const themeGlyph = mode === 'auto' ? '◐' : mode === 'light' ? '☀' : '☾'
     const cycleTheme = () => setTheme($, THEMES[(THEMES.indexOf(mode) + 1) % THEMES.length] ?? 'auto')
@@ -1016,16 +995,20 @@ export const register: Register = on => {
     const isTerminalSurface = e.surface === 'terminal'
     // Terminal widths are cells; desktop widths are the SVG pills' pixels.
     const widthOf = isTerminalSurface ? terminalWidth : (pill: Pill) => (pillPx(pill) + PILL_GAP) / CELL_PX
-    const budget = columns - (estimates.length > 0 ? 6 : 3) - (isTerminalSurface && isOpen ? 10 : 0)
+    // The desktop row holds only 📈 beside the pills (◐ sits in the chart panel); the terminal row
+    // holds both, and room for the view switch while the charts are open.
+    const buttonCells = isTerminalSurface ? (estimates.length > 0 ? 6 : 3) + (isOpen ? 10 : 0) : estimates.length > 0 ? 3 : 0
+    const budget = columns - buttonCells
     const fitWidth = isTerminalSurface ? widthOf : (pill: Pill) => widthOf(pill) - 1
     const fitsAll = fitPills(pills, budget, fitWidth)
-    const isCut = fitsAll.length < pills.length || fitsAll.some(pill => pill.sub !== pills.find(one => one.id === pill.id)?.sub)
-    // Nothing is dropped for good: what does not fit sits behind a "+N" button that expands the
-    // band onto as many lines as it needs, and folds it back to one.
+    // A whole pill never disappears: when one does not fit, a "+N" button expands the band onto as
+    // many lines as it needs, and folds it back to one. A trimmed detail alone (a reset countdown,
+    // a hit rate) does not call for the button, whose own room would cost a pill its place.
+    const isCut = fitsAll.length < pills.length
     const isExpanded = (await read($, isRowExpanded)) && isCut
     const shown = isExpanded ? pills : isCut ? fitPills(pills, budget - MORE_CELLS, fitWidth) : fitsAll
     const hiddenCount = pills.length - shown.length
-    const moreLabel = isExpanded ? 'Less' : hiddenCount > 0 ? `+${hiddenCount}` : '⋯'
+    const moreLabel = isExpanded ? 'Less' : `+${hiddenCount}`
     const toggleRow = () => update($, isRowExpanded, open => !open)
     // Where each pill ends, so a strip opens just right of the pill under the pointer and never
     // covers it: covering it would end the hover that shows the strip.
@@ -1123,6 +1106,7 @@ export const register: Register = on => {
             <Box flexDirection="column" gap={1} flexShrink={0}>
               <Button key="view-chart" label="Chart" variant={view === 'chart' ? 'primary' : 'secondary'} onPress={() => update($, chartView, () => 'chart')} />
               <Button key="view-models" label="By model" variant={view === 'models' ? 'primary' : 'secondary'} onPress={() => update($, chartView, () => 'models')} />
+              <Button key="theme" label={themeGlyph} plain dimColor onPress={cycleTheme} />
             </Box>
           </Box>
         ) : null}
@@ -1138,7 +1122,6 @@ export const register: Register = on => {
             </Box>
           ))}
           {isCut ? <Button key="more" label={moreLabel} plain dimColor onPress={toggleRow} /> : null}
-          <Button key="theme" label={themeGlyph} plain dimColor onPress={cycleTheme} />
           {estimates.length > 0 ? <Button key="chart" label="📈" plain dimColor onPress={toggleChart} /> : null}
           {strips.map(strip => {
             const width = Math.floor(strip.width * CELL_PX)

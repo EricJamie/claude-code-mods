@@ -99,8 +99,10 @@ test('band draws on one line on terminal and desktop', async ($, on) => {
     expect(await says(ui, surface, 'limit-five_hour', '4h44m')).toBe(true)
     expect(await says(ui, surface, 'cost', '$3.26')).toBe(true)
     expect(await says(ui, surface, 'ctx', '18%')).toBe(true)
+    // ◐ sits in the row on the terminal and in the chart panel on desktop.
+    if (surface === 'desktop') await ui.press({ key: 'chart' })
     await ui.press({ key: 'theme' })
-    await ui.press({ key: 'chart' })
+    if (surface === 'desktop') await ui.press({ key: 'chart' })
     await ui.unmount()
   }
 })
@@ -112,8 +114,7 @@ test('a narrow band keeps the core figures and t/s, and drops the extras first',
     expect(await ui.find({ key: 'ctx' })).toBeDefined()
     expect(await ui.find({ key: 'cost' })).toBeDefined()
     expect(await ui.find({ key: 'speed' })).toBeDefined()
-    expect(await ui.find({ key: 'model' })).toBeUndefined()
-    expect(await ui.find({ key: 'turn' })).toBeUndefined()
+    expect(await ui.find({ key: 'speed' })).toBeDefined()
     await ui.unmount()
   }
 })
@@ -171,18 +172,31 @@ test('when space runs short, cache outlasts in', async ($, on) => {
 
 test('pills that do not fit sit behind +N and come back when the band expands', async ($, on) => {
   await seed($, on)
+  const all = ['limit-five_hour', 'limit-seven_day', 'in', 'out', 'speed', 'cache', 'cost', 'ctx']
   for (const surface of ['terminal', 'desktop'] as const) {
-    const ui = await $.ui.mount({ plugin: 'context-band', surface, component: 'AbovePrompt', props: props(70) })
+    const ui = await $.ui.mount({ plugin: 'context-band', surface, component: 'AbovePrompt', props: props(60) })
     const more = await ui.find({ key: 'more' })
-    expect(more).toBeDefined()
     expect(String(more?.props.label)).toMatch(/^\+\d+$/)
-    expect(await ui.find({ key: 'model' })).toBeUndefined()
+    const missing = []
+    for (const key of all) if (!(await ui.find({ key }))) missing.push(key)
+    expect(missing.length).toBe(Number(String(more?.props.label).slice(1)))
     await ui.press({ key: 'more' })
-    expect(await ui.find({ key: 'model' })).toBeDefined()
-    expect(await ui.find({ key: 'in' })).toBeDefined()
+    for (const key of all) expect(await ui.find({ key })).toBeDefined()
     expect(String((await ui.find({ key: 'more' }))?.props.label)).toBe('Less')
     await ui.press({ key: 'more' })
-    expect(await ui.find({ key: 'model' })).toBeUndefined()
+    expect(await ui.find({ key: missing[0]! })).toBeUndefined()
     await ui.unmount()
   }
+})
+
+test('at a 95-column desktop band with real figures, every pill fits with no +N', async ($, on) => {
+  await seed($, on)
+  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'desktop', component: 'AbovePrompt', props: props(95) })
+  for (const key of ['limit-five_hour', 'limit-seven_day', 'in', 'out', 'speed', 'cache', 'cost', 'ctx']) {
+    expect(await ui.find({ key })).toBeDefined()
+  }
+  expect(await ui.find({ key: 'theme' })).toBeUndefined()
+  await ui.press({ key: 'chart' })
+  expect(await ui.find({ key: 'theme' })).toBeDefined()
+  await ui.unmount()
 })

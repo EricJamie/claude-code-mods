@@ -19,7 +19,7 @@ Hover the 5h or 7d pill for a one-line estimate of what that window is worth at 
 - **Chart**: where the window ends at your pace (or when you hit the limit), your average spend rate beside the rate that lands on 100% at the reset, and a strip chart against the limit and last week
 - **By model**: for each model, the tokens left if you use only that model (with bars to compare), and the tokens it has used
 
-The band follows the app's light or dark theme; ◐ cycles auto, light and dark.
+The band follows the app's light or dark theme; ◐ (in the 📈 panel) cycles auto, light and dark.
 
 ### Install
 
@@ -83,7 +83,7 @@ Mods are an early-access Claude Code feature; the test runner needs that variabl
 - **Chart（图表）**：按当前速度到重置时会用到多少（或何时触顶）、目前的平均花费速度和刚好在重置时用满的速度，以及与额度线和上周对比的小图
 - **By model（按模型）**：如果只用某个模型还能用多少 token（带对比条），以及该模型已用的 token
 
-状态栏会自动跟随应用的浅色/深色主题；◐ 按钮可在自动、浅色、深色之间切换。
+状态栏会自动跟随应用的浅色/深色主题；📈 面板里的 ◐ 按钮可在自动、浅色、深色之间切换。
 
 ### 安装
 
