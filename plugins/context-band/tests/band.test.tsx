@@ -168,3 +168,21 @@ test('when space runs short, cache outlasts in', async ($, on) => {
   }
   expect(competed).toBe(true)
 })
+
+test('pills that do not fit sit behind +N and come back when the band expands', async ($, on) => {
+  await seed($, on)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'context-band', surface, component: 'AbovePrompt', props: props(70) })
+    const more = await ui.find({ key: 'more' })
+    expect(more).toBeDefined()
+    expect(String(more?.props.label)).toMatch(/^\+\d+$/)
+    expect(await ui.find({ key: 'model' })).toBeUndefined()
+    await ui.press({ key: 'more' })
+    expect(await ui.find({ key: 'model' })).toBeDefined()
+    expect(await ui.find({ key: 'in' })).toBeDefined()
+    expect(String((await ui.find({ key: 'more' }))?.props.label)).toBe('Less')
+    await ui.press({ key: 'more' })
+    expect(await ui.find({ key: 'model' })).toBeUndefined()
+    await ui.unmount()
+  }
+})

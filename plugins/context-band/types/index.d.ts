@@ -70,6 +70,7 @@ declare module 'claude-code' {
       api: ContextBandApi | null
       isChartOpen: boolean
       chartView: ContextBandChartView
+      isRowExpanded: boolean
     }
   }
 }

@@ -12,6 +12,8 @@ A band above the prompt, in the desktop app and the CLI, that updates after ever
 - **in / out** tokens, **~t/s** output speed, **cache** tokens and hit rate
 - **$** the session's cost at API prices, **ctx** how full the context window is
 
+The band stays on one line. When some pills don't fit, a **+N** button at the end expands it to show every pill, and **Less** folds it back.
+
 Hover the 5h or 7d pill for a one-line estimate of what that window is worth at API prices. The 📈 button opens two views of both windows:
 
 - **Chart**: where the window ends at your pace (or when you hit the limit), your average spend rate beside the rate that lands on 100% at the reset, and a strip chart against the limit and last week
@@ -73,6 +75,8 @@ Mods are an early-access Claude Code feature; the test runner needs that variabl
 - **5h / 7d**：5 小时和 7 天用量限额的使用比例，以及距离重置的时间
 - **in / out**：输入、输出 token；**~t/s**：输出速度；**cache**：缓存 token 和命中率
 - **$**：本次会话按 API 价格计算的花费；**ctx**：上下文窗口的使用比例
+
+状态栏默认只占一行。放不下的指标会收进末尾的 **+N** 按钮，点击即可展开显示全部，点击 **Less** 收起。
 
 鼠标悬停在 5h 或 7d 上，会显示该窗口按 API 价格折算的估值。点击 📈 打开两个视图：
 

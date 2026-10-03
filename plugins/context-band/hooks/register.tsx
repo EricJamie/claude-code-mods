@@ -24,6 +24,7 @@ const appearance = atom({ plugin: 'context-band', key: 'appearance' } as const, 
 const isHidden = atom({ plugin: 'context-band', key: 'isHidden' } as const, false)
 const api = atom({ plugin: 'context-band', key: 'api' } as const, null)
 const isChartOpen = atom({ plugin: 'context-band', key: 'isChartOpen' } as const, false)
+const isRowExpanded = atom({ plugin: 'context-band', key: 'isRowExpanded' } as const, false)
 const chartView = atom({ plugin: 'context-band', key: 'chartView' } as const, 'chart')
 
 const THEMES: readonly ContextBandTheme[] = ['auto', 'light', 'dark']
@@ -701,7 +702,13 @@ function pillBody(pill: Pill, p: Palette) {
   return parts.join('')
 }
 
-const pillSvg = (pill: Pill, mode: ContextBandTheme) => themedSvg(Math.ceil(pillPx(pill)) + PILL_GAP, PILL_H, MONO, mode, p => pillBody(pill, p))
+const pillSvg = (pill: Pill, mode: ContextBandTheme, below = 0) =>
+  themedSvg(Math.ceil(pillPx(pill)) + PILL_GAP, PILL_H + below, MONO, mode, p => pillBody(pill, p))
+
+// Cells the "+N" button takes when some pills sit behind it.
+const MORE_CELLS = 4
+// Room between wrapped rows of pills.
+const ROW_SPACE = 5
 
 const pillAlt = (pill: Pill) => [pill.label, pill.value, pill.sub].filter(Boolean).join(' ')
 
@@ -1010,7 +1017,16 @@ export const register: Register = on => {
     // Terminal widths are cells; desktop widths are the SVG pills' pixels.
     const widthOf = isTerminalSurface ? terminalWidth : (pill: Pill) => (pillPx(pill) + PILL_GAP) / CELL_PX
     const budget = columns - (estimates.length > 0 ? 6 : 3) - (isTerminalSurface && isOpen ? 10 : 0)
-    const shown = fitPills(pills, budget, isTerminalSurface ? widthOf : pill => widthOf(pill) - 1)
+    const fitWidth = isTerminalSurface ? widthOf : (pill: Pill) => widthOf(pill) - 1
+    const fitsAll = fitPills(pills, budget, fitWidth)
+    const isCut = fitsAll.length < pills.length || fitsAll.some(pill => pill.sub !== pills.find(one => one.id === pill.id)?.sub)
+    // Nothing is dropped for good: what does not fit sits behind a "+N" button that expands the
+    // band onto as many lines as it needs, and folds it back to one.
+    const isExpanded = (await read($, isRowExpanded)) && isCut
+    const shown = isExpanded ? pills : isCut ? fitPills(pills, budget - MORE_CELLS, fitWidth) : fitsAll
+    const hiddenCount = pills.length - shown.length
+    const moreLabel = isExpanded ? 'Less' : hiddenCount > 0 ? `+${hiddenCount}` : '⋯'
+    const toggleRow = () => update($, isRowExpanded, open => !open)
     // Where each pill ends, so a strip opens just right of the pill under the pointer and never
     // covers it: covering it would end the hover that shows the strip.
     const ends = new Map<string, number>()
@@ -1019,7 +1035,8 @@ export const register: Register = on => {
       ends.set(pill.id, end)
       return end
     }, 0)
-    const strips = shown.flatMap(pill => {
+    // The hover strips assume one line, so the expanded band goes without them.
+    const strips = (isExpanded ? [] : shown).flatMap(pill => {
       const w = estimateOf(pill)
       if (!pill.scope || !w) return []
       const left = Math.ceil(ends.get(pill.id) ?? 0) + 1
@@ -1037,7 +1054,7 @@ export const register: Register = on => {
                 </Text>
               ))
             : null}
-          <Box flexDirection="row" flexWrap="nowrap" columnGap={1} overflow="hidden">
+          <Box flexDirection="row" flexWrap={isExpanded ? 'wrap' : 'nowrap'} columnGap={1} overflow="hidden">
             {shown.map(pill => (
               <Box key={pill.id} flexDirection="row" flexShrink={0} {...(pill.scope ? { hover: { scope: pill.scope } } : {})}>
                 <Text backgroundColor={toneFor(pill).bg} color={toneFor(pill).accent}>
@@ -1065,6 +1082,7 @@ export const register: Register = on => {
                 <Text backgroundColor={toneFor(pill).bg}> </Text>
               </Box>
             ))}
+            {isCut ? <Button key="more" label={moreLabel} plain dimColor onPress={toggleRow} /> : null}
             <Button key="theme" label={themeGlyph} plain dimColor onPress={cycleTheme} />
             {estimates.length > 0 ? <Button key="chart" label="📈" plain dimColor onPress={toggleChart} /> : null}
             {isOpen && estimates.length > 0 ? <Button key="view" label={view === 'chart' ? 'By model' : 'Chart'} plain dimColor onPress={switchView} /> : null}
@@ -1108,12 +1126,18 @@ export const register: Register = on => {
             </Box>
           </Box>
         ) : null}
-        <Box flexDirection="row" flexWrap="nowrap" alignItems="center" overflow="hidden">
+        <Box flexDirection="row" flexWrap={isExpanded ? 'wrap' : 'nowrap'} alignItems="center" overflow="hidden">
           {shown.map(pill => (
             <Box key={pill.id} flexShrink={0} {...(pill.scope ? { hover: { scope: pill.scope } } : {})}>
-              <Svg source={pillSvg(pill, mode)} alt={pillAlt(pill)} width={Math.ceil(pillPx(pill)) + PILL_GAP} height={PILL_H} />
+              <Svg
+                source={pillSvg(pill, mode, isExpanded ? ROW_SPACE : 0)}
+                alt={pillAlt(pill)}
+                width={Math.ceil(pillPx(pill)) + PILL_GAP}
+                height={PILL_H + (isExpanded ? ROW_SPACE : 0)}
+              />
             </Box>
           ))}
+          {isCut ? <Button key="more" label={moreLabel} plain dimColor onPress={toggleRow} /> : null}
           <Button key="theme" label={themeGlyph} plain dimColor onPress={cycleTheme} />
           {estimates.length > 0 ? <Button key="chart" label="📈" plain dimColor onPress={toggleChart} /> : null}
           {strips.map(strip => {
