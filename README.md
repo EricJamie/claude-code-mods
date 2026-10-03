@@ -9,8 +9,13 @@ Mods for [Claude Code](https://claude.com/claude-code), distributed as a plugin 
 A band above the prompt, in the desktop app and the CLI, that updates after every turn:
 
 - **5h / 7d** rate-limit usage and the time until each resets
-- **in / out** tokens, **~t/s** output speed, **cache** tokens and hit rate
+- **in / out** tokens, **t/s** output speed, **cache** tokens and hit rate
 - **$** the session's cost at API prices, **ctx** how full the context window is
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/band-dark.png">
+  <img alt="The band: 5h and 7d limits, tokens in and out, speed, cache, cost and context" src="docs/screenshots/band-light.png" width="800">
+</picture>
 
 The band stays on one line. When some pills don't fit, a **+N** button at the end expands it to show every pill, and **Less** folds it back.
 
@@ -18,6 +23,18 @@ Hover the 5h or 7d pill for a one-line estimate of what that window is worth at 
 
 - **Chart**: where the window ends at your pace (or when you hit the limit), your average spend rate beside the rate that lands on 100% at the reset, and a strip chart against the limit and last week
 - **By model**: for each model, the tokens left if you use only that model (with bars to compare), and the tokens it has used
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/chart-dark.png">
+  <img alt="Chart view: where each window ends at your pace, and the spend rate that lands on 100% at the reset" src="docs/screenshots/chart-light.png" width="800">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/models-dark.png">
+  <img alt="By model view: tokens left in each window if you use only one model, and tokens each model used" src="docs/screenshots/models-light.png" width="800">
+</picture>
+
+<sub>Screenshots use demo figures.</sub>
 
 The band follows the app's light or dark theme; ◐ (in the 📈 panel) cycles auto, light and dark.
 
@@ -78,12 +95,29 @@ Mods are an early-access Claude Code feature; the test runner needs that variabl
 - **in / out**：输入、输出 token；**~t/s**：输出速度；**cache**：缓存 token 和命中率
 - **$**：本次会话按 API 价格计算的花费；**ctx**：上下文窗口的使用比例
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/band-dark.png">
+  <img alt="The band: 5h and 7d limits, tokens in and out, speed, cache, cost and context" src="docs/screenshots/band-light.png" width="800">
+</picture>
+
 状态栏默认只占一行。放不下的指标会收进末尾的 **+N** 按钮，点击即可展开显示全部，点击 **Less** 收起。
 
 鼠标悬停在 5h 或 7d 上，会显示该窗口按 API 价格折算的估值。点击 📈 打开两个视图：
 
 - **Chart（图表）**：按当前速度到重置时会用到多少（或何时触顶）、目前的平均花费速度和刚好在重置时用满的速度，以及与额度线和上周对比的小图
 - **By model（按模型）**：如果只用某个模型还能用多少 token（带对比条），以及该模型已用的 token
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/chart-dark.png">
+  <img alt="Chart view: where each window ends at your pace, and the spend rate that lands on 100% at the reset" src="docs/screenshots/chart-light.png" width="800">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/models-dark.png">
+  <img alt="By model view: tokens left in each window if you use only one model, and tokens each model used" src="docs/screenshots/models-light.png" width="800">
+</picture>
+
+<sub>截图中的数字为演示数据。</sub>
 
 状态栏会自动跟随应用的浅色/深色主题；📈 面板里的 ◐ 按钮可在自动、浅色、深色之间切换。
 
