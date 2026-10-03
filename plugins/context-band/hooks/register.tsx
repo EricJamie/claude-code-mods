@@ -40,6 +40,9 @@ type Palette = {
   danger: string
   tones: Record<ToneKey, Tone>
   models: Record<'opus' | 'sonnet' | 'fable' | 'haiku' | 'other', string>
+  // Opacities for the By model card's tinted answer column and its bar tracks.
+  tint: number
+  track: number
 }
 
 const LIGHT: Palette = {
@@ -62,6 +65,8 @@ const LIGHT: Palette = {
     turn: { bg: '#F3E5DA', accent: '#A0603A' },
   },
   models: { opus: '#D85A30', sonnet: '#1D9E75', fable: '#7F77DD', haiku: '#888780', other: '#B4B2A9' },
+  tint: 0.1,
+  track: 0.4,
 }
 
 const DARK: Palette = {
@@ -84,6 +89,8 @@ const DARK: Palette = {
     turn: { bg: '#3A2A20', accent: '#E0A27A' },
   },
   models: { opus: '#F0997B', sonnet: '#5DCAA5', fable: '#AFA9EC', haiku: '#B4B2A9', other: '#888780' },
+  tint: 0.16,
+  track: 0.7,
 }
 
 type IconName = 'gauge' | 'calendar' | 'bolt' | 'coin' | 'doc' | 'chip' | 'timer'
@@ -397,29 +404,49 @@ const tokensLeft = (w: ContextBandApiWindow, pct: number, usdPerToken: Record<st
   return left !== null && price ? left / price : null
 }
 
-// The By model card: the frame both views share, one line per model with the tokens it used here
-// and, in bold, the tokens left if it did all the rest, and at the foot (where the chart has its
-// legend) the line saying what those bold numbers are.
+// The By model card: the frame both views share, then a labelled table. "If you use only…" heads
+// the models, "tokens left" heads the answer column, tinted in the window's color so the eye lands
+// there, and a bar per row scales those numbers against the largest. Tokens already used sit in a
+// small grey column. The foot says why the numbers differ: the same dollars at each model's price.
 function modelsBody(w: ContextBandApiWindow, pct: number, models: string[], usdPerToken: Record<string, number>, p: Palette, t: number, width: number) {
-  const sans = `font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, sans-serif" style="font-variant-numeric: tabular-nums"`
+  const tone = p.tones[windowTone(w.kind)]
+  const nums = 'style="font-variant-numeric: tabular-nums"'
   const parts: string[] = [cardFrame(w, pct, p, t, width)]
-  const left = usdLeft(w, pct)
-  const foot = left !== null ? `${fmtUsd(left)} left · in tokens if one model does it all` : 'Not enough usage yet to estimate what is left'
-  parts.push(`<text x="16" y="${CARD_H - 10}" font-size="11.5" ${sans} fill="${p.muted}">${esc(foot)}</text>`)
-  if (models.length === 0) {
-    parts.push(`<text x="16" y="82" font-size="12.5" ${sans} fill="${p.muted}">No Claude Code usage this week yet</text>`)
+  const usedR = width - 16
+  const leftR = width - 66
+  const columnX = width - 126
+  const barX = 100
+  const barW = Math.max(20, columnX - 10 - barX)
+  const lefts = models.map(model => tokensLeft(w, pct, usdPerToken, model))
+  const most = Math.max(0, ...lefts.map(v => v ?? 0))
+  if (models.length > 0) {
+    const bottom = 99 + 20 * (models.length - 1) + 7
+    parts.push(`<rect x="${columnX}" y="65" width="66" height="${bottom - 65}" rx="7" fill="${tone.accent}" fill-opacity="${p.tint}"/>`)
   }
-  const usedR = Math.round(width * 0.62)
-  const leftR = width - 16
+  parts.push(`<text x="16" y="78" font-size="11" font-weight="500" fill="${p.text}">If you use only…</text>`)
+  parts.push(`<text x="${leftR}" y="78" font-size="10.5" font-weight="700" text-anchor="end" fill="${tone.accent}">tokens left</text>`)
+  parts.push(`<text x="${usedR}" y="78" font-size="10.5" text-anchor="end" fill="${p.muted}">used</text>`)
+  parts.push(`<line x1="16" y1="84" x2="${usedR}" y2="84" stroke="${p.divider}" stroke-opacity="0.7" stroke-width="1"/>`)
+  if (models.length === 0) {
+    parts.push(`<text x="16" y="102" font-size="12" fill="${p.muted}">No Claude Code usage this week yet</text>`)
+  }
   models.forEach((model, i) => {
-    const y = 82 + i * 22
+    const y = 99 + i * 20
+    const color = modelColor(p, model)
     const used = w.byModel.find(m => m.model === model)
-    const tokens = tokensLeft(w, pct, usdPerToken, model)
-    parts.push(`<circle cx="21" cy="${y - 4}" r="3.5" fill="${modelColor(p, model)}"/>`)
-    parts.push(`<text x="31" y="${y}" font-size="12.5" ${sans} fill="${p.text}">${esc(modelLabel(model))}</text>`)
-    parts.push(`<text x="${usedR}" y="${y}" font-size="11.5" ${sans} text-anchor="end" fill="${used ? p.muted : p.divider}">${esc(used ? `${fmtTokens(tokensOf(used))} used` : 'not used')}</text>`)
-    parts.push(`<text x="${leftR}" y="${y}" font-size="13" font-weight="600" ${sans} text-anchor="end" fill="${tokens !== null ? p.text : p.divider}">${esc(tokens !== null ? fmtTokens(tokens) : '—')}</text>`)
+    const left = lefts[i] ?? null
+    parts.push(`<circle cx="20" cy="${y - 4.2}" r="4" fill="${color}"/>`)
+    parts.push(`<text x="30" y="${y}" font-size="12" fill="${p.text}">${esc(modelLabel(model))}</text>`)
+    parts.push(`<rect x="${barX}" y="${y - 7.2}" width="${barW}" height="6" rx="3" fill="${p.divider}" fill-opacity="${p.track}"/>`)
+    if (left !== null && most > 0) {
+      parts.push(`<rect x="${barX}" y="${y - 7.2}" width="${Math.max(3, (barW * left) / most).toFixed(1)}" height="6" rx="3" fill="${color}"/>`)
+    }
+    parts.push(`<text x="${leftR}" y="${y}" font-size="13" font-weight="700" text-anchor="end" fill="${p.text}" ${nums}>${esc(left !== null ? fmtTokens(left) : '—')}</text>`)
+    parts.push(`<text x="${usedR}" y="${y}" font-size="10.5" text-anchor="end" fill="${p.muted}" ${nums}>${esc(used ? fmtTokens(tokensOf(used)) : 'none')}</text>`)
   })
+  const left = usdLeft(w, pct)
+  const foot = left !== null ? `Same ${fmtUsd(left)} left, spent at each model’s price` : 'Not enough usage yet to estimate what is left'
+  parts.push(`<text x="16" y="${CARD_H - 10}" font-size="10.5" fill="${p.muted}">${esc(foot)}</text>`)
   return parts.join('')
 }
 

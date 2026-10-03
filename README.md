@@ -15,7 +15,7 @@ A band above the prompt, in the desktop app and the CLI, that updates after ever
 Hover the 5h or 7d pill for a one-line estimate of what that window is worth at API prices. The 📈 button opens two views of both windows:
 
 - **Chart**: spend across the window against its 100% line, the previous window, and your pace
-- **By model**: tokens each model used, and the tokens left if one model did all the rest
+- **By model**: for each model, the tokens left if you use only that model (with bars to compare), and the tokens it has used
 
 The band follows the app's light or dark theme; ◐ cycles auto, light and dark.
 
@@ -55,8 +55,10 @@ API prices live in `PRICES` in `bin/api_estimate.py`. A new model in a known fam
 
 ```
 claude plugin validate plugins/context-band
-claude plugin test plugins/context-band
+CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude plugin test plugins/context-band
 ```
+
+Mods are an early-access Claude Code feature; the test runner needs that variable.
 
 ---
 
@@ -75,7 +77,7 @@ claude plugin test plugins/context-band
 鼠标悬停在 5h 或 7d 上，会显示该窗口按 API 价格折算的估值。点击 📈 打开两个视图：
 
 - **Chart（图表）**：窗口内的花费曲线、100% 线、上一个窗口和当前速度的预测
-- **By model（按模型）**：每个模型已用的 token，以及如果只用这个模型还能用多少 token
+- **By model（按模型）**：如果只用某个模型还能用多少 token（带对比条），以及该模型已用的 token
 
 状态栏会自动跟随应用的浅色/深色主题；◐ 按钮可在自动、浅色、深色之间切换。
 
@@ -115,5 +117,7 @@ API 价格写在 `bin/api_estimate.py` 的 `PRICES` 表里。同系列的新模�
 
 ```
 claude plugin validate plugins/context-band
-claude plugin test plugins/context-band
+CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude plugin test plugins/context-band
 ```
+
+插件（mod）是 Claude Code 的早期功能，运行测试需要设置这个环境变量。
