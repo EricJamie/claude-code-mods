@@ -1,6 +1,9 @@
 # claude-code-mods
 
-Mods for [Claude Code](https://claude.com/claude-code), distributed as a plugin marketplace.
+Mods for [Claude Code](https://claude.com/claude-code), distributed as a plugin marketplace:
+
+- [context-band](#context-band): a band above the prompt with rate limits, tokens, speed, cache, cost and context
+- [cache-timer](#cache-timer): a countdown to when the conversation's prompt cache expires, before the model name
 
 [中文说明](#中文说明)
 
@@ -9,8 +12,7 @@ Mods for [Claude Code](https://claude.com/claude-code), distributed as a plugin 
 A band above the prompt, in the desktop app and the CLI, that updates after every turn:
 
 - **5h / 7d** rate-limit usage and the time until each resets
-- **in / out** tokens, **t/s** output speed
-- **cache**: a countdown to when the conversation's prompt cache expires, with tokens cached and hit rate
+- **in / out** tokens, **t/s** output speed, **cache** tokens and hit rate
 - **$** the session's cost at API prices, **ctx** how full the context window is
 
 <picture>
@@ -36,16 +38,6 @@ Hover the 5h or 7d pill for a one-line estimate of what that window is worth at 
 </picture>
 
 <sub>Screenshots use demo figures.</sub>
-
-### The cache countdown
-
-Claude Code caches the conversation so far, so each message reads it back instead of sending it again. A cache entry lives a fixed time from the start of the last request that read or wrote it, and every message restarts that time. Claude Code's main conversation uses 1-hour entries on some plans and 5-minute ones on others; subagents use 5-minute ones. The band reads which one your session uses from its transcript.
-
-The **cache** pill counts down to that expiry. It turns orange in the last sixth of the entry's life (10 minutes of an hour), red in the last 2 minutes, and says **expired** after. Hover it to see what the next message costs at API prices while the cache is warm, and what it costs after expiry, when the whole context is written to the cache again.
-
-Reading the cache is cheap but not free: Opus 5.5 reads cost $0.20 per million tokens against $4 for fresh input. Writing costs 1.25× the input price for a 5-minute entry and 2× for a 1-hour one. So letting a 180k-token Opus 5.5 conversation expire turns a ≈ $0.04 read into a ≈ $1.44 write.
-
-The countdown starts from the main conversation's own requests. Requests the band does not see (some background ones) can refresh the cache too, so the real expiry can be a little later than shown.
 
 In the terminal, 📈 shows the same two views as small tables, one row per window with the columns lined up, and drops the least important columns when the window is narrow.
 
@@ -96,19 +88,35 @@ CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude plugin test plugins/context-band
 
 Mods are an early-access Claude Code feature; the test runner needs that variable.
 
+## cache-timer
+
+A countdown in the prompt footer, before the model name: `cache 41:41` until the conversation's prompt cache expires. It turns orange in the last sixth of the entry's life (10 minutes of an hour), red in the last 2 minutes, and says `expired` after.
+
+```
+/plugin install cache-timer@claude-code-mods
+```
+
+Claude Code caches the conversation so far, so each message reads it back instead of sending it again. A cache entry lives a fixed time from the **start** of the last request that read or wrote it, and every message restarts that time. The main conversation uses 1-hour entries on some plans and 5-minute ones on others (subagents use 5-minute ones); the timer reads which from the session's transcript, so it needs `python3`.
+
+Reading the cache is cheap but not free: on Opus 5.5 a cache read costs $0.20 per million tokens against $4 for fresh input, and writing costs 1.25× the input price for a 5-minute entry or 2× for a 1-hour one. Once an entry expires, the next message writes the whole context again: for a 180k-token Opus 5.5 conversation that is ≈ $1.44 instead of a ≈ $0.04 read.
+
+The countdown starts from the main conversation's own requests. Requests it does not see (some background ones) can refresh the cache too, so the real expiry can be a little later than shown.
+
 ---
 
 ## 中文说明
 
-[Claude Code](https://claude.com/claude-code) 的插件（mod）集合，以插件市场的形式发布。
+[Claude Code](https://claude.com/claude-code) 的插件（mod）集合，以插件市场的形式发布：
+
+- **context-band**：输入框上方的状态栏，显示用量限额、token、速度、缓存、花费和上下文
+- **cache-timer**：在模型名称前面显示对话缓存到期的倒计时
 
 ### context-band 状态栏
 
 显示在输入框上方（桌面端和命令行都支持），每轮对话后自动更新：
 
 - **5h / 7d**：5 小时和 7 天用量限额的使用比例，以及距离重置的时间
-- **in / out**：输入、输出 token；**t/s**：输出速度
-- **cache**：对话缓存到期的倒计时，以及缓存 token 和命中率
+- **in / out**：输入、输出 token；**t/s**：输出速度；**cache**：缓存 token 和命中率
 - **$**：本次会话按 API 价格计算的花费；**ctx**：上下文窗口的使用比例
 
 <picture>
@@ -134,16 +142,6 @@ Mods are an early-access Claude Code feature; the test runner needs that variabl
 </picture>
 
 <sub>截图中的数字为演示数据。</sub>
-
-### 缓存倒计时
-
-Claude Code 会把已有的对话内容缓存起来，之后每条消息直接读缓存，不用重新发送全部内容。每条缓存有固定寿命，从最近一次读写它的请求**开始**时算起，每发一条消息都会重新计时。Claude Code 主对话的缓存，有的套餐是 1 小时，有的是 5 分钟；子代理用的是 5 分钟。状态栏会从本次会话的对话记录里读出你用的是哪一种。
-
-**cache** 指标显示离缓存过期还有多久：剩最后六分之一时（1 小时缓存即最后 10 分钟）变橙色，最后 2 分钟变红色，过期后显示 **expired**。鼠标悬停可以看到：缓存还在时下一条消息要花多少，过期后又要花多少（按 API 价格；过期后整段上下文要重新写入缓存）。
-
-读缓存很便宜，但不免费：Opus 5.5 读缓存每百万 token $0.20，正常输入是 $4。写缓存是输入价的 1.25 倍（5 分钟缓存）或 2 倍（1 小时缓存）。所以一段 18 万 token 的 Opus 5.5 对话，缓存过期后，下一条消息的这部分费用会从约 $0.04 变成约 $1.44。
-
-倒计时以主对话自己的请求为准。状态栏看不到的一些后台请求也可能刷新缓存，所以实际过期时间可能比显示的稍晚一些。
 
 在命令行里，📈 用对齐的小表格显示同样的两个视图（每个窗口一行），终端较窄时会先省略次要的列。
 
@@ -193,3 +191,17 @@ CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude plugin test plugins/context-band
 ```
 
 插件（mod）是 Claude Code 的早期功能，运行测试需要设置这个环境变量。
+
+### cache-timer 缓存倒计时
+
+在输入框下方、模型名称前面显示 `cache 41:41`，即离对话缓存过期还有多久。剩最后六分之一时（1 小时缓存即最后 10 分钟）变橙色，最后 2 分钟变红色，过期后显示 `expired`。
+
+```
+/plugin install cache-timer@claude-code-mods
+```
+
+Claude Code 会把已有的对话内容缓存起来，之后每条消息直接读缓存，不用重新发送全部内容。每条缓存有固定寿命，从最近一次读写它的请求**开始**时算起，每发一条消息都会重新计时。主对话的缓存，有的套餐是 1 小时，有的是 5 分钟（子代理用 5 分钟）；插件会从本次会话的对话记录里读出是哪一种，所以需要 `python3`。
+
+读缓存很便宜，但不免费：Opus 5.5 读缓存每百万 token $0.20，正常输入是 $4；写缓存是输入价的 1.25 倍（5 分钟缓存）或 2 倍（1 小时缓存）。缓存过期后，下一条消息要把整段上下文重新写入缓存：一段 18 万 token 的 Opus 5.5 对话，这部分费用会从约 $0.04 变成约 $1.44。
+
+倒计时以主对话自己的请求为准。插件看不到的一些后台请求也可能刷新缓存，所以实际过期时间可能比显示的稍晚一些。

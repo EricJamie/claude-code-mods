@@ -181,7 +181,7 @@ def scan_spend(now):
                 seen.add(key)
                 events.append((t, cost, *rest))
     events.sort()
-    return events, files, reparsed
+    return events, len(files), reparsed
 
 
 def usd_per_token(events, now, scales):
@@ -354,40 +354,27 @@ def estimate(window, events, history, now):
     }
 
 
-def session_info(events, files, session_id, scales):
+def session_tokens(events, session_id):
     """One session's tokens and requests, so a band loaded partway through a session (a plugin
-    installed or reloaded mid-session) starts from what the session has already used; and its main
-    conversation's prompt cache: how long an entry lives (Claude Code writes 1-hour entries for the
-    main conversation on some plans and 5-minute ones on others; subagents write 5-minute ones) and
-    what writing and reading it costs at the model the conversation last used."""
+    installed or reloaded mid-session) starts from what the session has already used."""
     rows = [e for e in events if session_id and e[8] == session_id]
-    info = {'input': sum(e[3] for e in rows), 'output': sum(e[4] for e in rows), 'cacheRead': sum(e[5] for e in rows),
+    return {'input': sum(e[3] for e in rows), 'output': sum(e[4] for e in rows), 'cacheRead': sum(e[5] for e in rows),
             'cacheWrite': sum(e[6] for e in rows), 'requests': len(rows)}
-    main = next((entry for path, entry in files.items() if session_id and os.path.basename(path) == f'{session_id}.jsonl'), None)
-    writes = [e for e in (main or {}).get('events', []) if e[7] > 0]
-    if writes:
-        last = max(writes, key=lambda e: e[0])
-        model, is_hour = last[3], last[8] > 0
-        inp, _out, read = price_for('claude-' + model)[0]
-        scale = scales.get(model, 1.0)
-        info.update(cacheTtlMs=HOUR if is_hour else 5 * 60_000, cacheModel=model,
-                    cacheWriteUsdPerMTok=round(inp * (2 if is_hour else 1.25) * scale, 4), cacheReadUsdPerMTok=round(read * scale, 4))
-    return info
 
 
 def main():
     began = time.time()
     args = json.loads(sys.argv[1]) if len(sys.argv) > 1 else {}
     now = int(args.get('now') or time.time() * 1000)
-    events, scanned, reparsed = scan_spend(now)
+    events, files, reparsed = scan_spend(now)
     session_costs = {c['sessionId']: c for c in args.get('sessionCosts') or [] if c.get('sessionId') and c.get('usd')}
     scales, kinds = learn_scales(events, session_costs)
     events = [(e[0], e[1] * scales.get(e[2], 1.0), *e[2:]) for e in events]
     history = load_history()
     windows = [estimate(w, events, history, now) for w in args.get('windows') or []]
     print(json.dumps({'at': now, 'windows': windows, 'usdPerToken': usd_per_token(events, now, scales), 'prices': kinds,
-                      'scales': {m: round(v, 3) for m, v in scales.items() if v != 1.0}, 'files': len(scanned), 'reparsed': reparsed, 'messages': len(events),
-                      'hasHistory': bool(history), 'session': session_info(events, scanned, args.get('sessionId'), scales),
+                      'scales': {m: round(v, 3) for m, v in scales.items() if v != 1.0}, 'files': files, 'reparsed': reparsed, 'messages': len(events),
+                      'hasHistory': bool(history), 'session': session_tokens(events, args.get('sessionId')),
                       'ms': int((time.time() - began) * 1000)}))
 
 

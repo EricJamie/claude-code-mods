@@ -6,17 +6,6 @@ export type ContextBandStats = {
   requests: number
 }
 
-// The main conversation's prompt cache: when the last request that read or wrote it started (an
-// entry lives from the start of the request that last touched it), how long it lives, and what
-// writing and reading it costs at API prices. startedAt is 0 before a request; the rest null until
-// the transcript has shown them.
-export type ContextBandCache = {
-  startedAt: number
-  ttlMs: number | null
-  writeUsdPerMTok: number | null
-  readUsdPerMTok: number | null
-}
-
 export type ContextBandLimit = { kind: string; percentUsed: number; resetsAt: string | null }
 
 export type ContextBandUsage = {
@@ -91,8 +80,6 @@ declare module 'claude-code' {
       isChartOpen: boolean
       chartView: ContextBandChartView
       isRowExpanded: boolean
-      cache: ContextBandCache
-      tick: number
     }
   }
 }

@@ -1,7 +1,7 @@
 {
-  "name": "context-band",
-  "version": "0.8.1",
-  "description": "A band above the prompt with rate limits, tokens, speed, cache, cost and context fill, in light and dark themes",
+  "name": "cache-timer",
+  "version": "0.1.0",
+  "description": "A countdown to when the conversation's prompt cache expires, in the prompt footer before the model name",
   "author": {
     "name": "LilianSu"
   },
