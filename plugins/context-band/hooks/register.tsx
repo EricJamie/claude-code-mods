@@ -43,6 +43,8 @@ type Palette = {
   // Opacities for the By model card's tinted answer column and its bar tracks.
   tint: number
   track: number
+  // Opacity of the area under the Chart card's spend curve.
+  area: number
 }
 
 const LIGHT: Palette = {
@@ -67,6 +69,7 @@ const LIGHT: Palette = {
   models: { opus: '#D85A30', sonnet: '#1D9E75', fable: '#7F77DD', haiku: '#888780', other: '#B4B2A9' },
   tint: 0.1,
   track: 0.4,
+  area: 0.14,
 }
 
 const DARK: Palette = {
@@ -91,6 +94,7 @@ const DARK: Palette = {
   models: { opus: '#F0997B', sonnet: '#5DCAA5', fable: '#AFA9EC', haiku: '#B4B2A9', other: '#888780' },
   tint: 0.16,
   track: 0.7,
+  area: 0.22,
 }
 
 type IconName = 'gauge' | 'calendar' | 'bolt' | 'coin' | 'doc' | 'chip' | 'timer'
@@ -264,13 +268,6 @@ function parseApi(stdout: string): ContextBandApi | null {
   }
 }
 
-const niceCeil = (v: number) => {
-  const mag = 10 ** Math.floor(Math.log10(Math.max(v, 1e-6)))
-  return ([1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10].find(step => step * mag >= v) ?? 10) * mag
-}
-
-const fmtAxis = (v: number) => (v === 0 ? '$0' : v >= 1000 ? `$${Number((v / 1000).toFixed(1))}k` : v >= 10 ? `$${Math.round(v)}` : `$${Number(v.toFixed(1))}`)
-
 // Under a few points of the window used, one point of rounding moves the estimate a lot.
 const isRough = (w: ContextBandApiWindow) => (w.basis === 'previous window' ? (w.prevPct ?? 0) : w.pct) < 5
 
@@ -314,8 +311,8 @@ function cardFrame(w: ContextBandApiWindow, pct: number, p: Palette, t: number, 
     fmtUsd(w.spendUsd),
     ...(tokens > 0 ? [`${fmtTokens(tokens)} tokens`] : []),
   ]
-  const withReset = [...pieces, `resets ${fmtLeft(w.endAt - t)}`].join(' · ')
-  const detail = withReset.length * 6 <= width - 32 ? withReset : pieces.join(' · ')
+  // The reset time is in the Chart card's verdict row and on the 5h/7d pills, so not here.
+  const detail = pieces.join(' · ')
   return (
     `<rect x="0.5" y="0.5" width="${width - 1}" height="${CARD_H - 1}" rx="12" fill="${p.card}" stroke="${p.divider}"/>` +
     `<text x="16" y="${TITLE_Y}" font-size="14" font-weight="600" fill="${p.text}">${esc(title)}</text>` +
@@ -323,55 +320,176 @@ function cardFrame(w: ContextBandApiWindow, pct: number, p: Palette, t: number, 
   )
 }
 
-function chartBody(w: ContextBandApiWindow, pct: number, p: Palette, t: number, width: number) {
-  const tone = p.tones[windowTone(w.kind)]
-  const { dur, elapsed, spend, pacePct, rate, paceUsd } = chartGeometry(w, pct, t)
-  const x0 = 50
-  const x1 = width - 18
-  const y0 = 72
-  const y1 = CARD_H - 40
-  // Always up to the 100% line, so every chart reads as progress toward the limit.
-  const top = niceCeil(Math.max(rate ?? 0, paceUsd ?? 0, ...w.bins, ...w.prevBins, 1) * 1.08)
-  const sx = (ms: number) => x0 + (Math.min(dur, Math.max(0, ms)) / dur) * (x1 - x0)
-  const sy = (usd: number) => y1 - (Math.min(usd, top) / top) * (y1 - y0)
-  const line = (bins: number[], until: number) =>
-    [`${sx(0).toFixed(1)},${sy(0).toFixed(1)}`]
-      .concat(bins.map((v, i) => `${sx(Math.min((i + 1) * w.binMs, until)).toFixed(1)},${sy(v).toFixed(1)}`))
-      .join(' ')
-  const parts: string[] = [cardFrame(w, pct, p, t, width)]
-  for (const v of [0, top / 2, top]) {
-    parts.push(`<line x1="${x0}" x2="${x1}" y1="${sy(v)}" y2="${sy(v)}" stroke="${p.divider}" stroke-opacity="0.6" stroke-width="1"/>`)
-    parts.push(`<text x="${x0 - 7}" y="${sy(v) + 4}" font-size="10" text-anchor="end" fill="${p.muted}">${esc(fmtAxis(v))}</text>`)
+// Rates in the Chart card: one decimal below $20, whole dollars above.
+const fmtRate = (v: number) => (v < 20 ? `$${v.toFixed(1)}` : `$${String(Math.round(v)).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}`)
+
+// Tokens to three significant figures.
+const fmtTok3 = (n: number) => {
+  for (const [div, suffix] of [[1e9, 'B'], [1e6, 'M'], [1e3, 'k']] as const) {
+    if (n >= div) {
+      const x = n / div
+      return `${x < 10 ? x.toFixed(2) : x < 100 ? x.toFixed(1) : x.toFixed(0)}${suffix}`
+    }
+  }
+  return `${Math.round(n)}`
+}
+
+// "6d 8h", "2h 18m", "43m".
+const fmtSpan = (ms: number) => {
+  const minutes = Math.max(0, Math.round(ms / 60_000))
+  const days = Math.floor(minutes / 1440)
+  const hours = Math.floor((minutes % 1440) / 60)
+  return days > 0 ? `${days}d ${hours}h` : hours > 0 ? `${hours}h ${minutes % 60}m` : `${minutes % 60}m`
+}
+
+// What a token costs on the newest Opus at your mix, for the Chart card's "≈ … Opus" figures.
+const opusPrice = (usdPerToken: Record<string, number>) => {
+  const key = Object.keys(usdPerToken).filter(m => m.startsWith('opus')).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))[0]
+  return (key && usdPerToken[key]) || 0.367e-6
+}
+
+// The Chart card: what the By model table cannot show, which is time. A verdict (where the window
+// ends at this pace, or when it runs out), the average rate so far beside the rate that lands on
+// 100% at the reset, and a strip on a fixed 0–100% scale so the limit is the same top edge on every
+// card. The headroom wedge between the pace line and the limit is what the answer row quantifies.
+function chartBody(w: ContextBandApiWindow, p: Palette, t: number, width: number, usdPerToken: Record<string, number>) {
+  const acc = p.tones[windowTone(w.kind)].accent
+  const parts: string[] = [cardFrame(w, w.pct, p, t, width)]
+  const L = 16
+  const R = width - 16
+  const tw = (text: string, size: number) => text.length * size * 0.55
+  const win = Math.max(1, w.endAt - w.startAt)
+  const el = Math.min(1, Math.max(0, (t - w.startAt) / win))
+  const rate = w.rateUsd
+  const spend = w.bins.at(-1) ?? w.spendUsd
+  const pct = rate ? (spend / rate) * 100 : w.pct
+  const isWeek = win > 24 * 3600_000
+  const perMs = isWeek ? 86_400_000 : 3_600_000
+  const per = isWeek ? '/day' : '/h'
+  const elMs = el * win
+  const leftMs = (1 - el) * win
+  const avg = elMs > 0 ? spend / (elMs / perMs) : 0
+  const budget = rate && leftMs > 0 ? Math.max(rate - spend, 0) / (leftMs / perMs) : null
+  const early = el < 0.05 || spend <= 0 || !rate
+  const rawPace = el > 0 ? pct / el : 0
+  const over = !early && rawPace >= 100
+  const tHit = over ? (el * 100) / pct : null
+  const pace = Math.min(rawPace, 100)
+  const opus = opusPrice(usdPerToken)
+  const text = (x: number, y: number, size: number, fill: string, body: string, extra = '') =>
+    parts.push(`<text x="${x.toFixed(1)}" y="${y}" font-size="${size}" fill="${fill}"${extra}>${body}</text>`)
+
+  // 1. The verdict, and the reset on the right; shorter phrasings when the two would touch.
+  const resetIn = `reset in ${fmtSpan(leftMs)}`
+  type Option = { spans: [string, string, boolean][]; right: string }
+  let options: Option[]
+  let rightColor = acc
+  if (early) {
+    options =
+      spend <= 0
+        ? [{ spans: [['No usage yet this window', p.text, false]], right: resetIn }, { spans: [['No usage yet', p.text, false]], right: resetIn }]
+        : [{ spans: [['Too early to call a pace', p.text, false]], right: resetIn }, { spans: [['Too early to tell', p.text, false]], right: resetIn }]
+  } else if (over && tHit !== null) {
+    rightColor = p.danger
+    const hit = fmtSpan((tHit - el) * win)
+    const before = fmtSpan((1 - tHit) * win)
+    options = [
+      { spans: [['Limit hit in ', p.danger, false], [hit, p.danger, true]], right: `${before} before reset` },
+      { spans: [['Limit in ', p.danger, false], [hit, p.danger, true]], right: `${before} before reset` },
+      { spans: [['Limit in ', p.danger, false], [hit, p.danger, true]], right: `${before} early` },
+    ]
+  } else {
+    const share = `${Math.round(pace)}%`
+    options = [
+      { spans: [['On pace to finish at ', p.text, false], [share, acc, true]], right: resetIn },
+      { spans: [['Finishing at ', p.text, false], [share, acc, true]], right: resetIn },
+    ]
+  }
+  const chosen =
+    options.find(o => L + tw(o.spans.map(s => s[0]).join(''), 12) + 12 <= R - tw(o.right, 10.5)) ?? options[options.length - 1]!
+  const spans = chosen.spans.map(([piece, color, bold]) => `<tspan fill="${color}"${bold ? ' font-weight="700"' : ''}>${esc(piece)}</tspan>`).join('')
+  text(L, 78, 12, p.text, spans, ' font-weight="600"')
+  text(R, 78, 10.5, rightColor, esc(chosen.right), ' font-weight="700" text-anchor="end"')
+  parts.push(`<line x1="${L}" y1="84" x2="${R}" y2="84" stroke="${p.divider}" stroke-opacity="0.7" stroke-width="1"/>`)
+
+  // 2. The average so far, and the answer: the rate that lands on 100% at the reset.
+  const colA = R - 82
+  parts.push(`<rect x="10" y="106" width="${width - 20}" height="20" rx="7" fill="${acc}" fill-opacity="${p.tint}"/>`)
+  const a1 = elMs > 0 && avg > 0 ? `${fmtRate(avg)}${per}` : '—'
+  const b1 = a1 !== '—' ? `≈ ${fmtTok3(avg / opus)} Opus` : ''
+  const a2 = budget !== null ? `${fmtRate(budget)}${per}` : '—'
+  const b2 = budget !== null ? `≈ ${fmtTok3(budget / opus)} Opus` : ''
+  const longLabels = ['Average so far', over ? 'Slow down to' : 'Spend up to']
+  const shortLabels = ['Average', over ? 'Slow to' : 'Up to']
+  const fits = longLabels.every((label, i) => L + tw(label, 12) + 12 <= colA - tw(i === 0 ? a1 : a2, 13))
+  const labels = fits ? longLabels : shortLabels
+  const nums = ' style="font-variant-numeric: tabular-nums"'
+  ;[
+    { label: labels[0]!, a: a1, b: b1, y: 99, isAnswer: false },
+    { label: labels[1]!, a: a2, b: b2, y: 119, isAnswer: true },
+  ].forEach(row => {
+    text(L, row.y, 12, p.text, esc(row.label))
+    text(colA, row.y, 13, row.isAnswer && over ? p.danger : p.text, esc(row.a), `${row.isAnswer ? ' font-weight="700"' : ''} text-anchor="end"${nums}`)
+    if (row.b) text(R, row.y, 10.5, p.muted, esc(row.b), ` text-anchor="end"${nums}`)
+  })
+
+  // 3. The strip: time from the last reset to the next, 0–100% of this window's limit.
+  const yT = 134
+  const yB = 161
+  const pL = L
+  const pR = R - 34
+  const X = (f: number) => pL + f * (pR - pL)
+  const Y = (v: number) => yB - (Math.min(Math.max(v, 0), 100) / 100) * (yB - yT)
+  const pts = (seq: [number, number][]) => seq.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' ')
+  parts.push(`<line x1="${pL}" y1="${yB}" x2="${pR}" y2="${yB}" stroke="${p.divider}" stroke-opacity="0.7" stroke-width="1"/>`)
+  parts.push(`<line x1="${pL}" y1="${yT}" x2="${pR}" y2="${yT}" stroke="${p.danger}" stroke-opacity="0.75" stroke-width="1" stroke-dasharray="2 3"/>`)
+  text(pR + 6, yT + 3.6, 10, p.danger, 'limit')
+  let prevNow: number | null = null
+  let prevEnd: number | null = null
+  if (w.prevBins.length > 0 && w.prevRateUsd) {
+    const prevRate = w.prevRateUsd
+    const prev: [number, number][] = [[0, 0], ...w.prevBins.map((v, i): [number, number] => [((i + 1) * w.binMs) / win, (v / prevRate) * 100])]
+    prevEnd = prev.at(-1)?.[1] ?? null
+    for (let i = 1; i < prev.length; i++) {
+      const [t0, p0] = prev[i - 1]!
+      const [t1, p1] = prev[i]!
+      if (t0 <= el && el <= t1) {
+        prevNow = t1 > t0 ? p0 + ((p1 - p0) * (el - t0)) / (t1 - t0) : p1
+        break
+      }
+    }
+    parts.push(`<polyline points="${pts(prev.map(([f, v]) => [X(f), Y(v)]))}" fill="none" stroke="${p.muted}" stroke-opacity="0.55" stroke-width="1.25" stroke-linejoin="round"/>`)
   }
   if (rate) {
-    parts.push(`<line x1="${x0}" x2="${x1}" y1="${sy(rate)}" y2="${sy(rate)}" stroke="${p.danger}" stroke-opacity="0.7" stroke-dasharray="2 3"/>`)
-    parts.push(`<text x="${x1}" y="${sy(rate) - 4}" font-size="10" text-anchor="end" fill="${p.danger}">100%</text>`)
+    const nx = X(el)
+    const ny = Y(pct)
+    if (!early) {
+      const wedge: [number, number][] = over && tHit !== null ? [[nx, ny], [X(tHit), yT], [pR, yT]] : [[nx, ny], [pR, Y(pace)], [pR, yT]]
+      parts.push(`<polygon points="${pts(wedge)}" fill="${over ? p.danger : acc}" fill-opacity="${p.tint}"/>`)
+    }
+    parts.push(`<line x1="${nx.toFixed(1)}" y1="${ny.toFixed(1)}" x2="${pR}" y2="${yT}" stroke="${acc}" stroke-opacity="0.45" stroke-width="1"/>`)
+    const cur: [number, number][] = [[X(0), Y(0)], ...w.bins.map((v, i): [number, number] => [X(Math.min((i + 1) * w.binMs, elMs) / win), Y((v / rate) * 100)])]
+    parts.push(`<polygon points="${pts([...cur, [nx, yB], [pL, yB]])}" fill="${acc}" fill-opacity="${p.area}"/>`)
+    parts.push(`<polyline points="${pts(cur)}" fill="none" stroke="${acc}" stroke-width="1.75" stroke-linejoin="round" stroke-linecap="round"/>`)
+    if (!early) {
+      if (over && tHit !== null) {
+        const hx = X(tHit)
+        parts.push(`<line x1="${nx.toFixed(1)}" y1="${ny.toFixed(1)}" x2="${hx.toFixed(1)}" y2="${yT}" stroke="${p.danger}" stroke-width="1.6" stroke-dasharray="4 3"/>`)
+        parts.push(`<circle cx="${hx.toFixed(1)}" cy="${yT}" r="3" fill="${p.danger}" stroke="${p.card}" stroke-width="1.5"/>`)
+      } else {
+        parts.push(`<line x1="${nx.toFixed(1)}" y1="${ny.toFixed(1)}" x2="${pR}" y2="${Y(pace).toFixed(1)}" stroke="${acc}" stroke-width="1.6" stroke-dasharray="4 3"/>`)
+      }
+    }
+    parts.push(`<circle cx="${nx.toFixed(1)}" cy="${ny.toFixed(1)}" r="3.25" fill="${acc}" stroke="${p.card}" stroke-width="1.5"/>`)
   }
-  if (w.prevBins.length > 0) {
-    parts.push(`<polyline points="${line(w.prevBins, dur)}" fill="none" stroke="${p.muted}" stroke-opacity="0.55" stroke-width="1.5"/>`)
+
+  // 4. The previous window at this point and at its end, or a note that there is none.
+  if (prevNow !== null && prevEnd !== null) {
+    parts.push(`<line x1="${L}" y1="174.5" x2="${L + 12}" y2="174.5" stroke="${p.muted}" stroke-opacity="0.55" stroke-width="1.5" stroke-linecap="round"/>`)
+    text(L + 18, CARD_H - 10, 10.5, p.muted, esc(`Last ${isWeek ? 'week' : 'window'}: ${Math.round(prevNow)}% by now, ${Math.round(prevEnd)}% at reset`))
+  } else {
+    text(L, CARD_H - 10, 10.5, p.muted, esc(`No previous ${limitLabel(w.kind)} window to compare`))
   }
-  const current = line(w.bins, elapsed)
-  parts.push(`<polygon points="${current} ${sx(elapsed).toFixed(1)},${sy(0).toFixed(1)}" fill="${tone.accent}" fill-opacity="0.14"/>`)
-  parts.push(`<polyline points="${current}" fill="none" stroke="${tone.accent}" stroke-width="2.2" stroke-linejoin="round"/>`)
-  if (paceUsd !== null) {
-    parts.push(`<line x1="${sx(elapsed)}" y1="${sy(spend)}" x2="${sx(dur)}" y2="${sy(paceUsd)}" stroke="${tone.accent}" stroke-width="1.6" stroke-dasharray="4 4"/>`)
-  }
-  parts.push(`<circle cx="${sx(elapsed)}" cy="${sy(spend)}" r="3.5" fill="${tone.accent}"/>`)
-  parts.push(`<text x="${x0}" y="${y1 + 14}" font-size="10" fill="${p.muted}">last reset</text>`)
-  parts.push(`<text x="${x1}" y="${y1 + 14}" font-size="10" text-anchor="end" fill="${p.muted}">next reset</text>`)
-  const legendY = CARD_H - 10
-  let x = 16
-  const legend = (stroke: string, dash: string, text: string, opacity = 1) => {
-    if (x + 26 + text.length * 5.6 > width - 10) return
-    parts.push(`<line x1="${x}" x2="${x + 14}" y1="${legendY - 4}" y2="${legendY - 4}" stroke="${stroke}" stroke-opacity="${opacity}" stroke-width="2" ${dash}/>`)
-    parts.push(`<text x="${x + 19}" y="${legendY}" font-size="10.5" fill="${p.muted}">${esc(text)}</text>`)
-    x += 26 + text.length * 5.6
-  }
-  legend(tone.accent, '', 'this window')
-  if (w.prevBins.length > 0) {
-    legend(p.muted, '', `previous${w.prevRateUsd ? ` ≈ ${fmtUsd(w.prevRateUsd)}` : ''}`, 0.55)
-  }
-  if (pacePct !== null) legend(tone.accent, 'stroke-dasharray="4 4"', `pace → ${Math.round(pacePct)}%`)
   return parts.join('')
 }
 
@@ -463,8 +581,8 @@ const modelsLine = (w: ContextBandApiWindow, pct: number, models: string[], usdP
 
 const SANS = `font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, sans-serif"`
 
-const chartSvg = (w: ContextBandApiWindow, pct: number, mode: ContextBandTheme, t: number, width: number) =>
-  themedSvg(width, CARD_H, SANS, mode, p => chartBody(w, pct, p, t, width))
+const chartSvg = (w: ContextBandApiWindow, mode: ContextBandTheme, t: number, width: number, usdPerToken: Record<string, number>) =>
+  themedSvg(width, CARD_H, SANS, mode, p => chartBody(w, p, t, width, usdPerToken))
 
 const modelsSvg = (w: ContextBandApiWindow, pct: number, models: string[], usdPerToken: Record<string, number>, mode: ContextBandTheme, t: number, width: number) =>
   themedSvg(width, CARD_H, SANS, mode, p => modelsBody(w, pct, models, usdPerToken, p, t, width))
@@ -972,7 +1090,7 @@ export const register: Register = on => {
           <Box flexDirection="row" gap={1} marginBottom={1}>
             {estimates.map(w => (
               <Svg
-                source={view === 'models' ? modelsSvg(w, pctOf(w.kind), models, usdPerToken, mode, t, cardWidth) : chartSvg(w, pctOf(w.kind), mode, t, cardWidth)}
+                source={view === 'models' ? modelsSvg(w, pctOf(w.kind), models, usdPerToken, mode, t, cardWidth) : chartSvg(w, mode, t, cardWidth, usdPerToken)}
                 alt={
                   view === 'models'
                     ? modelsLine(w, pctOf(w.kind), models, usdPerToken)
