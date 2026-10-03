@@ -354,6 +354,14 @@ def estimate(window, events, history, now):
     }
 
 
+def session_tokens(events, session_id):
+    """One session's tokens and requests, so a band loaded partway through a session (a plugin
+    installed or reloaded mid-session) starts from what the session has already used."""
+    rows = [e for e in events if session_id and e[8] == session_id]
+    return {'input': sum(e[3] for e in rows), 'output': sum(e[4] for e in rows), 'cacheRead': sum(e[5] for e in rows),
+            'cacheWrite': sum(e[6] for e in rows), 'requests': len(rows)}
+
+
 def main():
     began = time.time()
     args = json.loads(sys.argv[1]) if len(sys.argv) > 1 else {}
@@ -366,7 +374,8 @@ def main():
     windows = [estimate(w, events, history, now) for w in args.get('windows') or []]
     print(json.dumps({'at': now, 'windows': windows, 'usdPerToken': usd_per_token(events, now, scales), 'prices': kinds,
                       'scales': {m: round(v, 3) for m, v in scales.items() if v != 1.0}, 'files': files, 'reparsed': reparsed, 'messages': len(events),
-                      'hasHistory': bool(history), 'ms': int((time.time() - began) * 1000)}))
+                      'hasHistory': bool(history), 'session': session_tokens(events, args.get('sessionId')),
+                      'ms': int((time.time() - began) * 1000)}))
 
 
 if __name__ == '__main__':

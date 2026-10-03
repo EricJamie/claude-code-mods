@@ -36,6 +36,10 @@ Hover the 5h or 7d pill for a one-line estimate of what that window is worth at 
 
 <sub>Screenshots use demo figures.</sub>
 
+In the terminal, 📈 shows the same two views as small tables, one row per window with the columns lined up, and drops the least important columns when the window is narrow.
+
+Installed or reloaded partway through a session (`/reload-plugins`), the band starts from the tokens the session has already used, read from its transcript; t/s appears after the next reply.
+
 The band follows the app's light or dark theme; ◐ (in the 📈 panel) cycles auto, light and dark.
 
 ### Install
@@ -92,7 +96,7 @@ Mods are an early-access Claude Code feature; the test runner needs that variabl
 显示在输入框上方（桌面端和命令行都支持），每轮对话后自动更新：
 
 - **5h / 7d**：5 小时和 7 天用量限额的使用比例，以及距离重置的时间
-- **in / out**：输入、输出 token；**~t/s**：输出速度；**cache**：缓存 token 和命中率
+- **in / out**：输入、输出 token；**t/s**：输出速度；**cache**：缓存 token 和命中率
 - **$**：本次会话按 API 价格计算的花费；**ctx**：上下文窗口的使用比例
 
 <picture>
@@ -118,6 +122,10 @@ Mods are an early-access Claude Code feature; the test runner needs that variabl
 </picture>
 
 <sub>截图中的数字为演示数据。</sub>
+
+在命令行里，📈 用对齐的小表格显示同样的两个视图（每个窗口一行），终端较窄时会先省略次要的列。
+
+如果在会话中途安装或重新加载插件（`/reload-plugins`），状态栏会从对话记录里读出本次会话已用的 token 作为起点；t/s 会在下一次回复后出现。
 
 状态栏会自动跟随应用的浅色/深色主题；📈 面板里的 ◐ 按钮可在自动、浅色、深色之间切换。
 

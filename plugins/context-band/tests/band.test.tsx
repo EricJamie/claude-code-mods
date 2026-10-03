@@ -92,6 +92,12 @@ const says = async (ui: Mounted, surface: 'terminal' | 'desktop', key: string, t
     ? (await ui.find({ key }))?.children !== undefined && JSON.stringify((await ui.find({ key }))?.children).includes(text)
     : JSON.stringify((await ui.find({ key }))?.children ?? '').includes(text)
 
+// The terminal's 📈 table: each line above the row of pills, as the text it shows.
+const textOf = (node: unknown): string =>
+  typeof node === 'string' ? node : ((node as { children?: unknown[] }).children ?? []).map(textOf).join('')
+const tableLines = async (ui: Mounted) =>
+  (((await ui.find({ type: 'Box' })) as unknown as { children: { type: string }[] }).children ?? []).filter(child => child.type === 'Text').map(textOf)
+
 test('band draws on one line on terminal and desktop', async ($, on) => {
   await seed($, on)
   for (const surface of ['terminal', 'desktop'] as const) {
@@ -146,14 +152,52 @@ test('the By model view lists each model with the tokens it used and the tokens 
     const drawn = JSON.stringify(await ui.find({ type: 'Box' }))
     // 7d: $1,129.33 at 100%, 6% used, so $1,061.57 left; at $0.368 per million tokens on Opus 5.5
     // that is 2.88B tokens if only Opus.
-    expect(drawn).toContain('Opus 5.5 56.17M used, 2.88B left if only it')
-    expect(drawn).toContain('Sonnet 5.5 165.4M used, 3.76B left if only it')
-    expect(drawn).toContain('Fable 5.1 4.81M used, 1.57B left if only it')
-    expect(drawn).toContain('$1,062 left')
+    if (surface === 'desktop') {
+      expect(drawn).toContain('Opus 5.5 56.17M used, 2.88B left if only it')
+      expect(drawn).toContain('Sonnet 5.5 165.4M used, 3.76B left if only it')
+      expect(drawn).toContain('Fable 5.1 4.81M used, 1.57B left if only it')
+      expect(drawn).toContain('$1,062 left')
+    } else {
+      // A column per model under "If you use only…", the 7d row under it.
+      const [header, row] = await tableLines(ui)
+      expect(header).toContain('If you use only…')
+      expect(row).toContain('7d $1,062 left')
+      for (const [model, left, used] of [['Opus 5.5', '2.88B left', '56.17M used'], ['Sonnet 5.5', '3.76B left', '165.4M used'], ['Fable 5.1', '1.57B left', '4.81M used']]) {
+        expect(row!.indexOf(left!)).toBe(header!.indexOf(model!))
+        expect(row).toContain(`${left} · ${used}`)
+      }
+    }
     await ui.press({ key: surface === 'desktop' ? 'view-chart' : 'view' })
     await ui.press({ key: 'chart' })
     await ui.unmount()
   }
+})
+
+test('the terminal Chart view says what the desktop card says, in columns', async ($, on) => {
+  await seed($, on, NOW + 4 * H)
+  const ui = (await $.ui.mount({ plugin: 'context-band', surface: 'terminal', component: 'AbovePrompt', props: props(200) })) as unknown as Mounted & {
+    press: (a: { key: string }) => Promise<unknown>
+    unmount: () => Promise<void>
+  }
+  await ui.press({ key: 'chart' })
+  const [header, row] = await tableLines(ui)
+  // 17h into a 168h week with 6% used: 59% at the reset; $1,061.57 over the 151h left is $169 a day.
+  expect(row).toContain('7d ≈ $1,129')
+  expect(row).toContain('59% at reset')
+  expect(row).toContain('$169/day ≈ ')
+  expect(row).toContain('5% by now, 47% at reset')
+  for (const [title, value] of [['At this pace', '█'], ['Spend up to', '$169/day'], ['Average so far', '$96/day'], ['Previous window', '5% by now']]) {
+    expect(row!.indexOf(value!)).toBe(header!.indexOf(title!))
+  }
+  // Narrow, it keeps the verdict and the rate to spend, and lets the rest go.
+  await ui.unmount()
+  const narrow = (await $.ui.mount({ plugin: 'context-band', surface: 'terminal', component: 'AbovePrompt', props: props(60) })) as unknown as Mounted & { unmount: () => Promise<void> }
+  const [, slim] = await tableLines(narrow)
+  expect(slim).toContain('59% at reset')
+  expect(slim).toContain('$169/day')
+  expect(slim).not.toContain('by now')
+  expect(slim!.trimEnd().length).toBeLessThanOrEqual(60)
+  await narrow.unmount()
 })
 
 test('when space runs short, cache outlasts in', async ($, on) => {

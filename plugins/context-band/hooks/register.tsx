@@ -260,6 +260,17 @@ function parseApi(stdout: string): ContextBandApi | null {
   }
 }
 
+// The session's own tokens so far, as the estimator read them from its transcript.
+function parseSession(stdout: string): ContextBandStats | null {
+  try {
+    const raw = (JSON.parse(stdout) as { session?: Record<string, unknown> }).session
+    if (!raw || typeof raw !== 'object') return null
+    return { input: num(raw.input), output: num(raw.output), cacheRead: num(raw.cacheRead), cacheWrite: num(raw.cacheWrite), requests: num(raw.requests) }
+  } catch {
+    return null
+  }
+}
+
 // Under a few points of the window used, one point of rounding moves the estimate a lot.
 const isRough = (w: ContextBandApiWindow) => (w.basis === 'previous window' ? (w.prevPct ?? 0) : w.pct) < 5
 
@@ -279,19 +290,14 @@ function themedSvg(width: number, height: number, attrs: string, mode: ContextBa
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" ${attrs}>${body}</svg>`
 }
 
-// Scales and points shared by the full chart and the strip's small one.
-function chartGeometry(w: ContextBandApiWindow, pct: number, t: number) {
+// The strip's small chart's scale: the window's length, the time gone, and the spend so far.
+function chartGeometry(w: ContextBandApiWindow, t: number) {
   const dur = Math.max(1, w.endAt - w.startAt)
   const elapsed = Math.min(dur, Math.max(0, t - w.startAt))
   const spend = w.bins.at(-1) ?? w.spendUsd
-  const frac = elapsed / dur
-  const pacePct = frac >= 0.04 ? Math.min(100, pct / frac) : null
-  const rate = w.rateUsd
-  const paceUsd = pacePct !== null && rate ? (rate * pacePct) / 100 : pacePct !== null && frac > 0 ? spend / frac : null
-  return { dur, elapsed, spend, pacePct, rate, paceUsd }
+  return { dur, elapsed, spend }
 }
 
-// The full card: what the window is worth at API prices, and spend across it as a line chart.
 // The frame both views share: the card, the window's estimate as its title, and the line under it.
 function cardFrame(w: ContextBandApiWindow, pct: number, p: Palette, t: number, width: number) {
   const label = limitLabel(w.kind)
@@ -340,16 +346,10 @@ const opusPrice = (usdPerToken: Record<string, number>) => {
   return (key && usdPerToken[key]) || 0.367e-6
 }
 
-// The Chart card: what the By model table cannot show, which is time. A verdict (where the window
-// ends at this pace, or when it runs out), the average rate so far beside the rate that lands on
-// 100% at the reset, and a strip on a fixed 0–100% scale so the limit is the same top edge on every
-// card. The headroom wedge between the pace line and the limit is what the answer row quantifies.
-function chartBody(w: ContextBandApiWindow, p: Palette, t: number, width: number, usdPerToken: Record<string, number>) {
-  const acc = p.tones[windowTone(w.kind)].accent
-  const parts: string[] = [cardFrame(w, w.pct, p, t, width)]
-  const L = 16
-  const R = width - 16
-  const tw = (text: string, size: number) => text.length * size * 0.55
+// What the Chart view says about one window, for the desktop card, the terminal table and the hover
+// strips alike: where the window ends at this pace (or when it hits the limit), the average rate so
+// far, the rate that lands on 100% at the reset, and the previous window at this point and its end.
+function chartFacts(w: ContextBandApiWindow, t: number, usdPerToken: Record<string, number> = {}) {
   const win = Math.max(1, w.endAt - w.startAt)
   const el = Math.min(1, Math.max(0, (t - w.startAt) / win))
   const rate = w.rateUsd
@@ -368,6 +368,49 @@ function chartBody(w: ContextBandApiWindow, p: Palette, t: number, width: number
   const tHit = over ? (el * 100) / pct : null
   const pace = Math.min(rawPace, 100)
   const opus = opusPrice(usdPerToken)
+  // The previous window as % of its own limit against the share of the window gone.
+  const prev: [number, number][] = []
+  let prevNow: number | null = null
+  let prevEnd: number | null = null
+  if (w.prevBins.length > 0 && w.prevRateUsd) {
+    const prevRate = w.prevRateUsd
+    prev.push([0, 0], ...w.prevBins.map((v, i): [number, number] => [((i + 1) * w.binMs) / win, (v / prevRate) * 100]))
+    prevEnd = prev.at(-1)?.[1] ?? null
+    for (let i = 1; i < prev.length; i++) {
+      const [t0, p0] = prev[i - 1]!
+      const [t1, p1] = prev[i]!
+      if (t0 <= el && el <= t1) {
+        prevNow = t1 > t0 ? p0 + ((p1 - p0) * (el - t0)) / (t1 - t0) : p1
+        break
+      }
+    }
+  }
+  return { win, el, rate, spend, pct, isWeek, per, elMs, leftMs, avg, budget, early, over, tHit, pace, opus, prev, prevNow, prevEnd }
+}
+
+type ChartFacts = ReturnType<typeof chartFacts>
+
+// The verdict in words, as the Chart card's first row says it.
+const verdictText = (f: ChartFacts) =>
+  f.early
+    ? f.spend <= 0
+      ? 'No usage yet'
+      : 'Too early to tell'
+    : f.over && f.tHit !== null
+      ? `Limit hit in ${fmtSpan((f.tHit - f.el) * f.win)}`
+      : `On pace to finish at ${Math.round(f.pace)}%`
+
+// The Chart card: what the By model table cannot show, which is time. A verdict (where the window
+// ends at this pace, or when it runs out), the average rate so far beside the rate that lands on
+// 100% at the reset, and a strip on a fixed 0–100% scale so the limit is the same top edge on every
+// card. The headroom wedge between the pace line and the limit is what the answer row quantifies.
+function chartBody(w: ContextBandApiWindow, p: Palette, t: number, width: number, usdPerToken: Record<string, number>) {
+  const acc = p.tones[windowTone(w.kind)].accent
+  const parts: string[] = [cardFrame(w, w.pct, p, t, width)]
+  const L = 16
+  const R = width - 16
+  const tw = (text: string, size: number) => text.length * size * 0.55
+  const { win, el, rate, spend, pct, isWeek, per, elMs, leftMs, avg, budget, early, over, tHit, pace, opus, prev, prevNow, prevEnd } = chartFacts(w, t, usdPerToken)
   const text = (x: number, y: number, size: number, fill: string, body: string, extra = '') =>
     parts.push(`<text x="${x.toFixed(1)}" y="${y}" font-size="${size}" fill="${fill}"${extra}>${body}</text>`)
 
@@ -436,20 +479,7 @@ function chartBody(w: ContextBandApiWindow, p: Palette, t: number, width: number
   parts.push(`<line x1="${pL}" y1="${yB}" x2="${pR}" y2="${yB}" stroke="${p.divider}" stroke-opacity="0.7" stroke-width="1"/>`)
   parts.push(`<line x1="${pL}" y1="${yT}" x2="${pR}" y2="${yT}" stroke="${p.danger}" stroke-opacity="0.75" stroke-width="1" stroke-dasharray="2 3"/>`)
   text(pR + 6, yT + 3.6, 10, p.danger, 'limit')
-  let prevNow: number | null = null
-  let prevEnd: number | null = null
-  if (w.prevBins.length > 0 && w.prevRateUsd) {
-    const prevRate = w.prevRateUsd
-    const prev: [number, number][] = [[0, 0], ...w.prevBins.map((v, i): [number, number] => [((i + 1) * w.binMs) / win, (v / prevRate) * 100])]
-    prevEnd = prev.at(-1)?.[1] ?? null
-    for (let i = 1; i < prev.length; i++) {
-      const [t0, p0] = prev[i - 1]!
-      const [t1, p1] = prev[i]!
-      if (t0 <= el && el <= t1) {
-        prevNow = t1 > t0 ? p0 + ((p1 - p0) * (el - t0)) / (t1 - t0) : p1
-        break
-      }
-    }
+  if (prev.length > 0) {
     parts.push(`<polyline points="${pts(prev.map(([f, v]) => [X(f), Y(v)]))}" fill="none" stroke="${p.muted}" stroke-opacity="0.55" stroke-width="1.25" stroke-linejoin="round"/>`)
   }
   if (rate) {
@@ -587,7 +617,7 @@ function modelsBody(
   return parts.join('')
 }
 
-// The terminal's By model line for one window.
+// The By model card's words, for its alt text.
 const modelsLine = (w: ContextBandApiWindow, pct: number, models: string[], usdPerToken: Record<string, number>, priceKinds: Record<string, ContextBandPriceKind> = {}) => {
   const rows = models.map(model => {
     const used = w.byModel.find(m => m.model === model)
@@ -619,9 +649,9 @@ const MINI_W = 96
 const MINI_H = 16
 
 // The strip's small chart: this window's spend so far against the previous window's.
-function miniChartBody(w: ContextBandApiWindow, pct: number, p: Palette, t: number) {
+function miniChartBody(w: ContextBandApiWindow, p: Palette, t: number) {
   const tone = p.tones[windowTone(w.kind)]
-  const { dur, elapsed, spend } = chartGeometry(w, pct, t)
+  const { dur, elapsed, spend } = chartGeometry(w, t)
   const top = Math.max(...w.bins, ...w.prevBins, 1e-6)
   const sx = (ms: number) => 1 + (Math.min(dur, Math.max(0, ms)) / dur) * (MINI_W - 2)
   const sy = (usd: number) => MINI_H - 2 - (usd / top) * (MINI_H - 4)
@@ -637,30 +667,141 @@ function miniChartBody(w: ContextBandApiWindow, pct: number, p: Palette, t: numb
   )
 }
 
-// The strip's words: the estimate and the figures behind it.
-const stripDetail = (w: ContextBandApiWindow, pct: number, t: number) => {
-  const { pacePct } = chartGeometry(w, pct, t)
+// One line about a window: the terminal's hover strip, and the alt text of the desktop's.
+function chartLine(w: ContextBandApiWindow, t: number, usdPerToken: Record<string, number> = {}) {
+  const f = chartFacts(w, t, usdPerToken)
+  const head = w.rateUsd ? `${limitLabel(w.kind)} window ≈ ${fmtUsd(w.rateUsd)} at API prices${roughMark(w)}` : `${limitLabel(w.kind)} window: estimating`
   return [
-    `at API prices${roughMark(w)}`,
-    `${fmtUsd(w.spendUsd)} spent`,
-    ...(w.prevRateUsd ? [`previous ≈ ${fmtUsd(w.prevRateUsd)}`] : []),
-    ...(pacePct !== null ? [`pace → ${Math.round(pacePct)}%`] : []),
+    head,
+    verdictText(f),
+    ...(!f.early && f.budget !== null ? [`spend up to ${fmtRate(f.budget)}${f.per}`] : []),
+    `reset in ${fmtSpan(f.leftMs)}`,
   ].join(' · ')
 }
 
-const SPARK = '▁▂▃▄▅▆▇█'
+// The terminal's 📈 views are small tables: a header row, then one row per window, each column as
+// wide as its widest cell, so the figures for 5h and 7d line up under one another.
+type Seg = { text: string; color?: string; isBold?: boolean }
+type Cell = Seg[]
+const seg = (text: string, color?: string, isBold = false): Seg => ({ text, color, isBold })
+const cellLen = (cell: Cell) => cell.reduce((n, s) => n + [...s.text].length, 0)
+const COL_GAP = 3
 
-// The terminal's strip and expanded line: the estimate in words, and spend across the window as a sparkline.
-function chartLine(w: ContextBandApiWindow, pct: number, t: number) {
-  const steps = w.bins.map((v, i) => v - (i > 0 ? (w.bins[i - 1] ?? 0) : 0))
-  const groups = 14
-  const per = Math.max(1, Math.ceil(steps.length / groups))
-  const sums: number[] = []
-  for (let i = 0; i < steps.length; i += per) sums.push(steps.slice(i, i + per).reduce((a, b) => a + b, 0))
-  const peak = Math.max(...sums, 1e-9)
-  const spark = sums.map(v => SPARK[Math.min(SPARK.length - 1, Math.floor((v / peak) * (SPARK.length - 1)))] ?? '▁').join('')
-  const head = w.rateUsd ? `${limitLabel(w.kind)} window ≈ ${fmtUsd(w.rateUsd)}` : `${limitLabel(w.kind)} window: estimating`
-  return `${head} ${spark} ${stripDetail(w, pct, t)}`
+function tableLines(rows: Cell[][]) {
+  const widths: number[] = []
+  rows.forEach(row => row.forEach((cell, i) => (widths[i] = Math.max(widths[i] ?? 0, cellLen(cell)))))
+  const total = widths.reduce((a, b) => a + b, 0) + COL_GAP * Math.max(0, widths.length - 1)
+  const lines = rows.map(row =>
+    row.flatMap((cell, i) => (i < row.length - 1 ? [...cell, seg(' '.repeat((widths[i] ?? 0) - cellLen(cell) + COL_GAP))] : cell)),
+  )
+  return { lines, total }
+}
+
+// The first layout that fits the width, richest first; the last one is cut at the edge if need be.
+function fitTable(layouts: Cell[][][], columns: number) {
+  const tables = layouts.map(tableLines)
+  return (tables.find(table => table.total <= columns) ?? tables[tables.length - 1]!).lines
+}
+
+const BAR = 10
+
+// The terminal Chart view: the Chart card's figures, one row per window. The bar is that card's
+// strip in ten cells: the share of the limit used, then where this pace takes it by the reset.
+function chartTable(windows: ContextBandApiWindow[], t: number, usdPerToken: Record<string, number>, p: Palette, columns: number) {
+  type Layout = { reset: boolean; spendOpus: boolean; average: boolean; averageOpus: boolean; previous: 'full' | 'short' | 'none' }
+  const facts = windows.map(w => ({ w, f: chartFacts(w, t, usdPerToken), acc: p.tones[windowTone(w.kind)].accent }))
+  const build = (o: Layout): Cell[][] => {
+    const header: Cell[] = [
+      [seg('At API prices', p.muted)],
+      [seg('At this pace', p.muted)],
+      ...(o.reset ? [[seg('Reset in', p.muted)]] : []),
+      [seg('Spend up to', p.muted)],
+      ...(o.average ? [[seg('Average so far', p.muted)]] : []),
+      ...(o.previous !== 'none' ? [[seg('Previous window', p.muted)]] : []),
+    ]
+    const rows = facts.map(({ w, f, acc }): Cell[] => {
+      const label = limitLabel(w.kind)
+      const used = Math.max(0, Math.min(BAR, Math.round((f.pct / 100) * BAR)))
+      const reach = f.early ? used : f.over ? BAR : Math.max(used, Math.min(BAR, Math.round((f.pace / 100) * BAR)))
+      const verdict = f.early
+        ? seg(f.spend <= 0 ? 'no usage yet' : 'too early to tell', p.muted)
+        : f.over && f.tHit !== null
+          ? seg(`limit in ${fmtSpan((f.tHit - f.el) * f.win)}`, p.danger, true)
+          : seg(`${Math.round(f.pace)}% at reset`, acc, true)
+      const rate = (v: number, color: string, isBold: boolean, withOpus: boolean): Cell => [
+        seg(`${fmtRate(v)}${f.per}`, color, isBold),
+        ...(withOpus ? [seg(` ≈ ${fmtTok3(v / f.opus)} Opus`, p.muted)] : []),
+      ]
+      return [
+        w.rateUsd ? [seg(`${label} ≈ ${fmtUsd(w.rateUsd)}`, acc, true), ...(isRough(w) ? [seg(' (rough)', p.muted)] : [])] : [seg(`${label} estimating`, p.muted)],
+        [seg('█'.repeat(used), acc), seg('▒'.repeat(reach - used), f.over ? p.danger : acc), seg('░'.repeat(BAR - reach), p.divider), seg(' '), verdict],
+        ...(o.reset ? [[seg(fmtSpan(f.leftMs), p.text)]] : []),
+        !f.early && f.budget !== null ? rate(f.budget, f.over ? p.danger : p.text, true, o.spendOpus) : [seg('—', p.muted)],
+        ...(o.average ? [f.avg > 0 ? rate(f.avg, p.text, false, o.averageOpus) : [seg('—', p.muted)]] : []),
+        ...(o.previous !== 'none'
+          ? [
+              f.prevNow !== null && f.prevEnd !== null
+                ? [seg(`${Math.round(f.prevNow)}% by now${o.previous === 'full' ? `, ${Math.round(f.prevEnd)}% at reset` : ''}`, p.muted)]
+                : [seg('—', p.muted)],
+            ]
+          : []),
+      ]
+    })
+    return [header, ...rows]
+  }
+  const layouts: Layout[] = [
+    { reset: true, spendOpus: true, average: true, averageOpus: true, previous: 'full' },
+    { reset: true, spendOpus: true, average: true, averageOpus: true, previous: 'short' },
+    { reset: true, spendOpus: true, average: true, averageOpus: false, previous: 'short' },
+    { reset: true, spendOpus: true, average: true, averageOpus: false, previous: 'none' },
+    { reset: true, spendOpus: true, average: false, averageOpus: false, previous: 'none' },
+    { reset: true, spendOpus: false, average: false, averageOpus: false, previous: 'none' },
+    { reset: false, spendOpus: false, average: false, averageOpus: false, previous: 'none' },
+  ]
+  return fitTable(layouts.map(build), columns)
+}
+
+// The terminal By model view: a column per model, a row per window, each cell the tokens left in
+// that window if you use only that model, then the tokens it has used there.
+function modelsTable(
+  windows: ContextBandApiWindow[],
+  pctOf: (kind: string) => number,
+  models: string[],
+  usdPerToken: Record<string, number>,
+  priceKinds: Record<string, ContextBandPriceKind>,
+  p: Palette,
+  columns: number,
+) {
+  const build = (shown: string[], withUsed: boolean): Cell[][] => {
+    const more = models.length - shown.length
+    const header: Cell[] = [
+      [seg('If you use only…', p.muted)],
+      ...shown.map(model => [seg(modelLabel(model), modelColor(p, model), true)]),
+      ...(more > 0 ? [[seg(`+${more} more`, p.muted)]] : []),
+    ]
+    const rows = windows.map((w): Cell[] => {
+      const pct = pctOf(w.kind)
+      const left = usdLeft(w, pct)
+      return [
+        [seg(limitLabel(w.kind), p.tones[windowTone(w.kind)].accent, true), seg(left !== null ? ` ${fmtUsd(left)} left` : ' estimating', p.text)],
+        ...shown.map((model): Cell => {
+          const tokens = tokensLeft(w, pct, usdPerToken, model)
+          const use = w.byModel.find(m => m.model === model)
+          const mark = priceKinds[model] === 'estimated' ? '≈ ' : ''
+          return [
+            seg(tokens !== null ? `${mark}${fmtTokens(tokens)} left` : '—', p.text, true),
+            ...(withUsed ? [seg(` · ${use ? `${fmtTokens(tokensOf(use))} used` : 'none used'}`, p.muted)] : []),
+          ]
+        }),
+      ]
+    })
+    return [header, ...rows]
+  }
+  const layouts = [build(models, true), build(models, false)]
+  for (let k = models.length - 1; k >= 1; k--) layouts.push(build(models.slice(0, k), false))
+  const lines = models.length > 0 ? fitTable(layouts, columns) : [[seg('No Claude Code usage in these windows yet', p.muted)]]
+  const estimated = models.filter(model => priceKinds[model] === 'estimated').map(modelLabel)
+  return estimated.length > 0 ? [...lines, [seg(`≈ ${estimated.join(', ')}: price estimated until learned`, p.muted)]] : lines
 }
 
 type Pill = {
@@ -740,11 +881,11 @@ const ROW_SPACE = 5
 const pillAlt = (pill: Pill) => [pill.label, pill.value, pill.sub].filter(Boolean).join(' ')
 
 // The hover strip: one line over the pills to the right of the hovered one, the same height as
-// them. It keeps what fits, in order of importance: the estimate, the spend, the chart, the rest.
+// them. It keeps what fits, in order of importance: the estimate, the verdict, the chart, the rest.
 function stripBody(w: ContextBandApiWindow, pct: number, p: Palette, t: number, width: number) {
   const tone = p.tones[windowTone(w.kind)]
   const mid = PILL_H / 2
-  const { pacePct } = chartGeometry(w, pct, t)
+  const f = chartFacts(w, t)
   type Piece = { rank: number; px: number; draw: (x: number) => string }
   const text = (rank: number, str: string, color: string, isBold = false): Piece => ({
     rank,
@@ -755,10 +896,10 @@ function stripBody(w: ContextBandApiWindow, pct: number, p: Palette, t: number, 
     text(0, `${limitLabel(w.kind)}`, tone.accent),
     text(0, w.rateUsd ? `≈ ${fmtUsd(w.rateUsd)}` : 'estimating', p.text, true),
     text(1, `at API prices${roughMark(w)}`, p.muted),
-    { rank: 3, px: MINI_W, draw: x => `<g transform="translate(${x.toFixed(1)} ${mid - MINI_H / 2})">${miniChartBody(w, pct, p, t)}</g>` },
-    text(2, `${fmtUsd(w.spendUsd)} spent`, p.muted),
-    ...(w.prevRateUsd ? [text(4, `previous ≈ ${fmtUsd(w.prevRateUsd)}`, p.muted)] : []),
-    ...(pacePct !== null ? [text(5, `pace → ${Math.round(pacePct)}%`, p.muted)] : []),
+    ...(f.early ? [] : [text(2, verdictText(f), f.over ? p.danger : p.muted, f.over)]),
+    { rank: 3, px: MINI_W, draw: x => `<g transform="translate(${x.toFixed(1)} ${mid - MINI_H / 2})">${miniChartBody(w, p, t)}</g>` },
+    text(4, `${fmtUsd(w.spendUsd)} spent`, p.muted),
+    ...(w.prevRateUsd ? [text(5, `previous ≈ ${fmtUsd(w.prevRateUsd)}`, p.muted)] : []),
   ]
   const room = width - PILL_PAD * 2
   const kept = new Set<Piece>()
@@ -809,7 +950,7 @@ function fitPills(pills: Pill[], budget: number, widthOf: (pill: Pill) => number
 }
 
 // Estimator runs and the band's last measured width: this module's own, started over by a reload.
-const scan = { at: 0, isRunning: false }
+const scan = { at: 0, isRunning: false, hasSeeded: false }
 const layout = { surface: '', bodyColumns: 0, saved: '' }
 
 // Each session's cost as Claude Code itself counts it, at current prices, kept so the estimator
@@ -846,11 +987,20 @@ async function scanApi($: EngineInterface, minGapMs: number) {
       stored && typeof stored === 'object'
         ? Object.entries(stored as Record<string, SessionCostRecord>).map(([sessionId, c]) => ({ sessionId, usd: c.usd, since: c.since }))
         : []
-    const arg = JSON.stringify({ now: t, windows: limits.map(l => ({ kind: l.kind, pct: l.percentUsed, resetsAt: l.resetsAt })), sessionCosts })
+    const sessionId = await $.session.id().catch(() => null)
+    const arg = JSON.stringify({ now: t, windows: limits.map(l => ({ kind: l.kind, pct: l.percentUsed, resetsAt: l.resetsAt })), sessionCosts, sessionId })
     const { exitCode, stdout } = await $.process.run(['python3', `${$.plugin.root}/bin/api_estimate.py`, arg], { timeoutMs: 60_000 })
     const parsed = exitCode === 0 ? parseApi(stdout) : null
     const current = await read($, api)
     if (parsed && JSON.stringify(current?.windows) !== JSON.stringify(parsed.windows)) await update($, api, () => parsed)
+    // Loaded partway through a session (installed or reloaded mid-session), the band has counted
+    // nothing yet: it starts from the tokens the transcript says the session has used. Only once
+    // per load, so a reset of the counters stays a reset.
+    if (parsed && !scan.hasSeeded) {
+      scan.hasSeeded = true
+      const seen = parseSession(stdout)
+      if (seen && seen.requests > 0) await update($, stats, s => (s.requests === 0 ? seen : s))
+    }
   } catch {
   } finally {
     scan.isRunning = false
@@ -1105,10 +1255,14 @@ export const register: Register = on => {
       const { Box, Text, Button } = $.ui.resolve(e)
       return (
         <Box flexDirection="column" width={columns}>
-          {isOpen
-            ? estimates.map(w => (
-                <Text color={toneOf(w).accent} wrap="truncate">
-                  {view === 'models' ? modelsLine(w, pctOf(w.kind), models, usdPerToken, priceKinds) : chartLine(w, pctOf(w.kind), t)}
+          {isOpen && estimates.length > 0
+            ? (view === 'models' ? modelsTable(estimates, pctOf, models, usdPerToken, priceKinds, p, columns) : chartTable(estimates, t, usdPerToken, p, columns)).map(line => (
+                <Text wrap="truncate">
+                  {line.map(s => (
+                    <Text {...(s.color ? { color: s.color } : {})} {...(s.isBold ? { bold: true } : {})}>
+                      {s.text}
+                    </Text>
+                  ))}
                 </Text>
               ))
             : null}
@@ -1147,7 +1301,7 @@ export const register: Register = on => {
             {strips.map(strip => (
               <Box position="absolute" top={0} left={strip.left} width={strip.width} display="none" hover={{ scope: strip.scope, display: 'flex' }}>
                 <Text backgroundColor={toneOf(strip.w).bg} color={p.text} wrap="truncate">
-                  {` ${chartLine(strip.w, pctOf(strip.w.kind), t)} `}
+                  {` ${chartLine(strip.w, t, usdPerToken)} `}
                 </Text>
               </Box>
             ))}
@@ -1202,7 +1356,7 @@ export const register: Register = on => {
             const width = Math.floor(strip.width * CELL_PX)
             return (
               <Box position="absolute" top={0} left={strip.left} width={strip.width} display="none" hover={{ scope: strip.scope, display: 'flex' }}>
-                <Svg source={stripSvg(strip.w, pctOf(strip.w.kind), mode, t, width)} alt={chartLine(strip.w, pctOf(strip.w.kind), t)} width={width} height={PILL_H} />
+                <Svg source={stripSvg(strip.w, pctOf(strip.w.kind), mode, t, width)} alt={chartLine(strip.w, t, usdPerToken)} width={width} height={PILL_H} />
               </Box>
             )
           })}
