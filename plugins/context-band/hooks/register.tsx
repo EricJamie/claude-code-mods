@@ -656,10 +656,10 @@ type Pill = {
 const PILL_H = 22
 const PILL_FONT = 12
 const CH = PILL_FONT * 0.6
-const PILL_PAD = 8
+const PILL_PAD = 6
 const PILL_ICON = 13
 const SP = 5
-const PILL_GAP = 6
+const PILL_GAP = 5
 const MONO = `font-family="ui-monospace, 'SF Mono', SFMono-Regular, Menlo, monospace" font-size="${PILL_FONT}"`
 // The desktop's cell, in CSS pixels, as offsets and widths in cells are drawn there.
 const CELL_PX = 7.6
@@ -953,8 +953,8 @@ export const register: Register = on => {
       })
     }
     if (s.requests > 0) {
-      pills.push({ id: 'in', tone: 'input', label: 'in', labelIsAccent: true, value: fmtTokens(s.input), priority: 9 })
-      pills.push({ id: 'out', tone: 'output', label: 'out', labelIsAccent: true, value: fmtTokens(s.output), priority: 8 })
+      pills.push({ id: 'in', tone: 'input', label: 'in', labelIsAccent: true, value: fmtTok3(s.input), priority: 10 })
+      pills.push({ id: 'out', tone: 'output', label: 'out', labelIsAccent: true, value: fmtTok3(s.output), priority: 8 })
     }
     if (turn?.tps) {
       pills.push({ id: 'speed', tone: 'speed', icon: 'bolt', value: `~${Math.round(turn.tps)} t/s`, priority: 5.5 })
@@ -967,9 +967,9 @@ export const register: Register = on => {
         tone: 'cache',
         label: 'cache',
         labelIsAccent: true,
-        value: fmtTokens(cached),
+        value: fmtTok3(cached),
         sub: prompt > 0 ? `${Math.round((s.cacheRead / prompt) * 100)}% hit` : undefined,
-        priority: 10,
+        priority: 9,
         subPriority: 18,
       })
     }

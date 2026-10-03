@@ -152,3 +152,19 @@ test('the By model view lists each model with the tokens it used and the tokens 
     await ui.unmount()
   }
 })
+
+test('when space runs short, cache outlasts in', async ($, on) => {
+  await seed($, on)
+  let competed = false
+  for (let columns = 60; columns <= 120; columns++) {
+    const ui = await $.ui.mount({ plugin: 'context-band', surface: 'desktop', component: 'AbovePrompt', props: props(columns) })
+    const hasIn = (await ui.find({ key: 'in' })) !== undefined
+    const hasCache = (await ui.find({ key: 'cache' })) !== undefined
+    if (hasIn !== hasCache) {
+      competed = true
+      expect(hasCache).toBe(true)
+    }
+    await ui.unmount()
+  }
+  expect(competed).toBe(true)
+})

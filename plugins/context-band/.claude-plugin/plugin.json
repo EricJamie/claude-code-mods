@@ -1,6 +1,6 @@
 {
   "name": "context-band",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "A band above the prompt with rate limits, tokens, speed, cache, cost and context fill, in light and dark themes",
   "author": {
     "name": "LilianSu"
