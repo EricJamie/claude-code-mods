@@ -1,0 +1,13 @@
+{
+  "name": "claude-code-mods",
+  "owner": { "name": "LilianSu" },
+  "metadata": { "description": "Mods for Claude Code" },
+  "plugins": [
+    {
+      "name": "context-band",
+      "source": "./plugins/context-band",
+      "description": "A band above the prompt with rate limits, tokens, speed, cache, cost and context, plus API-price estimates for the 5h and 7d windows",
+      "version": "0.1.0"
+    }
+  ]
+}
