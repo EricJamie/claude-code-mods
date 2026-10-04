@@ -11,9 +11,15 @@ and are read from Grok's own log, ~/.grok/logs/unified.jsonl:
 - the weekly limit: the newest `billing: fetched credits config` line. Grok writes it only when it
   fetches its billing data, so it can be hours or days old; the band says how old when it is.
 
-The log is internal and undocumented, so either figure can go missing in a later Grok, and the band
-then leaves it out. It is read incrementally: each run reads only what was added since the last,
-keeping its place and the figures it found in ~/.cache/context-band/grok-log.json.
+- live tokens and context while a turn runs: Grok sends the script new token and context figures
+  only when a turn ends, so mid-turn (and through a new session's first turn, before any) the band
+  sums this session's `inference_done` lines instead (prompt, cached and completion tokens), and
+  takes the context from the newest request's prompt. The cost still waits for the turn's end.
+
+The log is internal and undocumented, so these figures can go missing in a later Grok, and the band
+then falls back to the status JSON alone. It is read incrementally: each run reads only what was
+added since the last, keeping its place and the figures it found in
+~/.cache/context-band/grok-log.json.
 
 Colours are the terminal's own 16 ANSI colours, so the band follows its light or dark theme.
 """
@@ -27,6 +33,7 @@ from datetime import datetime
 LOG = os.path.expanduser('~/.grok/logs/unified.jsonl')
 STATE = os.path.expanduser('~/.cache/context-band/grok-log.json')
 STALE_S = 6 * 3600  # a weekly reading older than this shows the day it was taken
+STATE_VERSION = 2  # a new version reads the whole log again, to rebuild what the state holds
 
 RESET, BOLD, DIM = '\033[0m', '\033[1m', '\033[2m'
 FG = {'red': 31, 'green': 32, 'yellow': 33, 'blue': 34, 'magenta': 35, 'cyan': 36, 'grey': 90}
@@ -48,9 +55,9 @@ def load_state():
     try:
         with open(STATE) as fh:
             state = json.load(fh)
-        return state if isinstance(state, dict) else {}
+        return state if isinstance(state, dict) and state.get('version') == STATE_VERSION else {'version': STATE_VERSION}
     except (OSError, ValueError):
-        return {}
+        return {'version': STATE_VERSION}
 
 
 def save_state(state):
@@ -62,8 +69,8 @@ def save_state(state):
 
 
 def read_log(state):
-    """Folds the lines added to the log since the last run into the state: each session's newest
-    output speed, and the newest weekly-limit reading."""
+    """Folds the lines added to the log since the last run into the state: each session's request
+    totals, newest output speed and newest prompt size, and the newest weekly-limit reading."""
     try:
         info = os.stat(LOG)
     except OSError:
@@ -77,14 +84,25 @@ def read_log(state):
         fh.seek(offset)
         data = fh.read()
     end = data.rfind(b'\n') + 1  # a line still being written waits for the next run
-    speeds = state.get('speeds', {})
+    sessions = state.get('sessions', {})
     for line in data[:end].split(b'\n'):
         if b'"shell.turn.inference_done"' in line:
             try:
                 row = json.loads(line)
-                tps = row['ctx'].get('tokens_per_sec')
-                if row.get('sid') and isinstance(tps, (int, float)) and tps > 0:
-                    speeds[row['sid']] = [parse_ts(row.get('ts')) or 0, tps]
+                ctx, sid = row['ctx'], row.get('sid')
+                if not sid:
+                    continue
+                s = sessions.setdefault(sid, {'prompt': 0, 'cached': 0, 'out': 0})
+                prompt = int(ctx.get('prompt_tokens') or 0)
+                s['prompt'] += prompt
+                s['cached'] += int(ctx.get('cached_prompt_tokens') or 0)
+                s['out'] += int(ctx.get('completion_tokens') or 0)
+                s['at'] = parse_ts(row.get('ts')) or 0
+                if prompt:
+                    s['last_prompt'] = prompt
+                tps = ctx.get('tokens_per_sec')
+                if isinstance(tps, (int, float)) and tps > 0:
+                    s['tps'] = tps
             except (ValueError, KeyError, TypeError, AttributeError):
                 pass
         elif b'billing: fetched credits config' in line:
@@ -96,7 +114,7 @@ def read_log(state):
                                    'at': parse_ts(row.get('ts')), 'tier': row['ctx'].get('subscriptionTier')}
             except (ValueError, KeyError, TypeError):
                 pass
-    state['speeds'] = dict(sorted(speeds.items(), key=lambda kv: kv[1][0])[-50:])
+    state['sessions'] = dict(sorted(sessions.items(), key=lambda kv: kv[1].get('at', 0))[-50:])
     state.update(inode=info.st_ino, offset=offset + end)
     return state
 
@@ -164,23 +182,37 @@ def band(payload, state, now):
         items.append(Item('▦', '7d', f"{weekly['pct']:.0f}%", 'magenta', 4, sub, 6.5, level(weekly['pct']), True))
     ctx = payload.get('context_window') or {}
     use = ctx.get('session_usage') or {}
-    if use:
-        items.append(Item(None, 'in', fmt_tokens(use.get('input_tokens') or 0), 'red', 10))
-        items.append(Item(None, 'out', fmt_tokens(use.get('output_tokens') or 0), 'green', 8))
-    speed = (state.get('speeds') or {}).get(payload.get('session_id') or '')
-    if speed:
-        items.append(Item('ϟ', None, f"{round(speed[1])} t/s", 'cyan', 5.5))
-    if use:
-        cached = (use.get('cache_read_input_tokens') or 0) + (use.get('cache_creation_input_tokens') or 0)
-        prompt = ctx.get('session_input_tokens') or ((use.get('input_tokens') or 0) + cached)
-        hit = f"{round(100 * (use.get('cache_read_input_tokens') or 0) / prompt)}% hit" if prompt else None
+    logged = (state.get('sessions') or {}).get(payload.get('session_id') or '') or {}
+    # Session totals only grow: the status JSON's, as of the last turn's end, or the log's sums
+    # over this session's requests, which also count the turn in flight; whichever is further on.
+    cache_read = max(use.get('cache_read_input_tokens') or 0, logged.get('cached', 0))
+    cached = max(cache_read + (use.get('cache_creation_input_tokens') or 0), logged.get('cached', 0))
+    uncached = max(use.get('input_tokens') or 0, logged.get('prompt', 0) - logged.get('cached', 0))
+    output = max(use.get('output_tokens') or 0, logged.get('out', 0))
+    prompt = uncached + cached
+    has_tokens = bool(use) or bool(logged.get('prompt'))
+    if has_tokens:
+        items.append(Item(None, 'in', fmt_tokens(uncached), 'red', 10))
+        items.append(Item(None, 'out', fmt_tokens(output), 'green', 8))
+    if logged.get('tps'):
+        items.append(Item('ϟ', None, f"{round(logged['tps'])} t/s", 'cyan', 5.5))
+    if has_tokens:
+        hit = f"{round(100 * cache_read / prompt)}% hit" if prompt else None
         items.append(Item(None, 'cache', fmt_tokens(cached), 'blue', 9, hit, 18))
     cost = (payload.get('cost') or {}).get('total_cost_usd')
     if isinstance(cost, (int, float)):
         items.append(Item('$', None, f"${cost:.2f}", 'yellow', 5))
     pct = ctx.get('used_percentage')
+    used = ctx.get('context_tokens')
+    window = ctx.get('context_window_size')
+    # While a turn runs the JSON's context is as of the last turn's end; the newest request's
+    # prompt is what the conversation holds now.
+    started = (payload.get('turn') or {}).get('started_at_ms')
+    if started and logged.get('last_prompt') and logged.get('at', 0) * 1000 >= started:
+        used = logged['last_prompt']
+        pct = 100 * used / window if window else None
     if isinstance(pct, (int, float)):
-        sub = f"{fmt_tokens(ctx['context_tokens'])}/{fmt_tokens(ctx['context_window_size'])}" if ctx.get('context_tokens') is not None and ctx.get('context_window_size') else None
+        sub = f"{fmt_tokens(used)}/{fmt_tokens(window)}" if used is not None and window else None
         items.append(Item('▤', 'ctx', f"{pct:.0f}%", 'grey', 2, sub, 15, level(pct), True))
     return items
 
