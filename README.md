@@ -5,6 +5,8 @@ Mods for [Claude Code](https://claude.com/claude-code), distributed as a plugin 
 - [context-band](#context-band): a band above the prompt with rate limits, tokens, speed, cache, cost and context
 - [cache-timer](#cache-timer): a countdown to when the conversation's prompt cache expires, before the model name
 
+And the band for other agents: [Grok Build](grok/README.md) (a status line script) and [Codex](codex/README.md) (built-in status line settings).
+
 [中文说明](#中文说明)
 
 ## context-band
@@ -110,6 +112,8 @@ The countdown starts from the main conversation's own requests. Requests it does
 
 - **context-band**：输入框上方的状态栏，显示用量限额、token、速度、缓存、花费和上下文
 - **cache-timer**：在模型名称前面显示对话缓存到期的倒计时
+
+其他工具的状态栏：[Grok Build](grok/README.md)（状态行脚本）和 [Codex](codex/README.md)（内置状态行配置）。
 
 ### context-band 状态栏
 
